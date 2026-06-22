@@ -45,6 +45,7 @@ htmlcov/
 .vscode/
 *.swp
 *.swo
+*.swo
 
 # Prep notes and internal documents — must not be committed
 INTERVIEW_PREP.md
