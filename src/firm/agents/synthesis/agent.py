@@ -10,8 +10,8 @@ from firm.agents.synthesis.schemas import (
     SynthesisInput,
     SynthesisReport,
 )
-from firm.ports.llm import LLM, LLMError
-from firm.ports.types import LLMMessage
+from firm.ports.llm import LLM
+from firm.ports.types import LLMError, LLMMessage
 
 _SYSTEM_PROMPT = (
     "You are a senior portfolio manager writing an internal investment memo for a "

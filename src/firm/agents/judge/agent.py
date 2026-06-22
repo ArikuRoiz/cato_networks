@@ -6,8 +6,8 @@ import json
 
 from firm.agents.base import BaseAgent
 from firm.agents.judge.schemas import JudgeInput, Verdict
-from firm.ports.llm import LLM, LLMError
-from firm.ports.types import LLMMessage
+from firm.ports.llm import LLM
+from firm.ports.types import LLMError, LLMMessage
 
 _SYSTEM_PROMPT = (
     "You are an independent risk auditor at a quantitative trading firm. "
@@ -87,7 +87,7 @@ def _proposal_line(proposal: dict | None) -> str:  # type: ignore[type-arg]
 def _synthesis_line(synthesis: dict | None) -> str:  # type: ignore[type-arg]
     if not synthesis or "reason" in synthesis:
         return "Not available"
-    return synthesis.get("executive_summary", "")
+    return str(synthesis.get("executive_summary", ""))
 
 
 def _build_messages(inp: JudgeInput) -> list[LLMMessage]:
@@ -132,7 +132,7 @@ def _parse_verdict(correlation_id: str, content: str) -> Verdict:
     return Verdict(
         correlation_id=correlation_id,
         coherence_score=score,
-        alignment=alignment,  # type: ignore[arg-type]
+        alignment=alignment,
         flags=[str(f) for f in raw.get("flags", [])],
         recommendation=str(raw.get("recommendation", "")),
         reasoning=str(raw.get("reasoning", "")),

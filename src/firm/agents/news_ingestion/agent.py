@@ -45,7 +45,7 @@ def _ingest_symbol(
     evidence: EvidenceStore, symbol: str, cutoff: datetime
 ) -> int | NewsIngestionFailure:
     try:
-        import yfinance as yf  # local import — optional dependency
+        import yfinance as yf  # type: ignore[import-untyped]  # no stubs
     except ImportError:
         return NewsIngestionFailure(
             reason="yfinance not installed; run: pip install yfinance", symbol=symbol

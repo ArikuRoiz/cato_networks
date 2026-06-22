@@ -12,9 +12,9 @@ from firm.agents.technical.schemas import (
     TechnicalUnavailable,
 )
 from firm.domain import Bar
-from firm.ports.llm import LLM, LLMError
+from firm.ports.llm import LLM
 from firm.ports.market_data import MarketDataSource
-from firm.ports.types import LLMMessage
+from firm.ports.types import LLMError, LLMMessage
 
 _LOOKBACK_DAYS = 35  # enough for MACD(26) + buffer
 _SYSTEM_PROMPT = (
