@@ -292,7 +292,7 @@ def _build_eval_graph(
 
     def _research_node(state: dict[str, Any]) -> dict[str, Any]:
         symbol: str = state.get("symbol", "")
-        decision_ts: datetime = state.get("decision_ts")
+        decision_ts: datetime = state.get("decision_ts") or datetime.now(tz=UTC)
         correlation_id: str = state.get("correlation_id", "")
         inp = ResearchInput(
             symbol=symbol,
@@ -304,7 +304,7 @@ def _build_eval_graph(
 
     def _pm_node(state: dict[str, Any]) -> dict[str, Any]:
         symbol: str = state.get("symbol", "")
-        decision_ts: datetime = state.get("decision_ts")
+        decision_ts: datetime = state.get("decision_ts") or datetime.now(tz=UTC)
         correlation_id: str = state.get("correlation_id", "")
         research_result = state.get("research_result") or Refusal(reason="insufficient_evidence")
         inp = PMInput(
@@ -356,7 +356,7 @@ def _build_eval_graph(
 
     def _reporting_node(state: dict[str, Any]) -> dict[str, Any]:
         correlation_id: str = state.get("correlation_id", "")
-        decision_ts: datetime = state.get("decision_ts")
+        decision_ts: datetime = state.get("decision_ts") or datetime.now(tz=UTC)
         cycle_id = _str_to_uuid(correlation_id)
         inp = ReportingInput(
             cycle_id=cycle_id,
@@ -402,7 +402,7 @@ def _prices_for_risk(
     from the prices dict.  This helper ensures all held symbols are covered
     by falling back to the holding's average cost when no bar is available.
     """
-    decision_ts: datetime = state.get("decision_ts")
+    decision_ts: datetime = state.get("decision_ts") or datetime.now(tz=UTC)
     prices: dict[str, Decimal] = {}
 
     # Price for the proposed trade symbol (derived from proposal)
