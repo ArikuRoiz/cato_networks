@@ -1,77 +1,15 @@
-"""ResearchAgent — retrieve evidence chunks, injection-scan, then synthesise claims.
-
-Input:  ResearchInput(symbol, decision_ts, correlation_id)
-Output: Evidence | Refusal
-
-The agent NEVER emits prices, quantities, P&L, or dates — those come from
-domain tools.  The LLM summarises only the retrieved text chunks.
-"""
+"""ResearchAgent — retrieve evidence chunks, injection-scan, then synthesise claims."""
 
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from typing import Literal
 
-from pydantic import BaseModel
-
+from firm.agents.base import BaseAgent
+from firm.agents.research.schemas import Claim, Evidence, Refusal, ResearchInput
 from firm.domain.guardrails import InjectionDetected, InjectionGuard
 from firm.ports.evidence import EvidenceStore
 from firm.ports.llm import LLM
 from firm.ports.types import Chunk, LLMError, LLMMessage
-
-# ---------------------------------------------------------------------------
-# I/O schemas
-# ---------------------------------------------------------------------------
-
-
-class ResearchInput(BaseModel):
-    """Input contract for ResearchAgent."""
-
-    symbol: str
-    decision_ts: datetime
-    correlation_id: str
-
-    model_config = {"frozen": True}
-
-
-class Claim(BaseModel):
-    """A single grounded claim extracted from retrieved text."""
-
-    text: str
-    source_url: str
-    chunk_id: str
-
-    model_config = {"frozen": True}
-
-
-class Evidence(BaseModel):
-    """Successful research output: grounded claims for one symbol."""
-
-    symbol: str
-    claims: list[Claim]
-    retrieved_at: datetime
-
-    model_config = {"frozen": True}
-
-
-class Refusal(BaseModel):
-    """Research could not proceed — failure is a value, not an exception."""
-
-    reason: Literal[
-        "insufficient_evidence",
-        "store_unavailable",
-        "injection_detected",
-        "llm_error_retryable",
-        "llm_error_non_retryable",
-    ]
-
-    model_config = {"frozen": True}
-
-
-# ---------------------------------------------------------------------------
-# Agent
-# ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = (
     "You are a financial research assistant. "
@@ -83,21 +21,13 @@ _SYSTEM_PROMPT = (
 )
 
 
-class ResearchAgent:
-    """Retrieve, scan, and synthesise evidence for a single symbol."""
-
-    def __init__(
-        self,
-        evidence: EvidenceStore,
-        llm: LLM,
-        injection_guard: InjectionGuard,
-    ) -> None:
+class ResearchAgent(BaseAgent[ResearchInput, Evidence | Refusal]):
+    def __init__(self, evidence: EvidenceStore, llm: LLM, injection_guard: InjectionGuard) -> None:
         self._evidence = evidence
         self._llm = llm
         self._injection_guard = injection_guard
 
     def run(self, inp: ResearchInput) -> Evidence | Refusal:
-        """Return Evidence on success or a Refusal describing the failure mode."""
         chunks = self._evidence.search(
             inp.symbol,
             before=inp.decision_ts,
@@ -119,28 +49,14 @@ class ResearchAgent:
             return Refusal(reason="llm_error_non_retryable")
 
         claims = _parse_claims(resp.content, safe_chunks)
-        return Evidence(
-            symbol=inp.symbol,
-            claims=claims,
-            retrieved_at=inp.decision_ts,
-        )
+        return Evidence(symbol=inp.symbol, claims=claims, retrieved_at=inp.decision_ts)
 
 
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
-
-
-def _filter_safe_chunks(
-    chunks: list[Chunk],
-    guard: InjectionGuard,
-) -> list[Chunk]:
-    """Return only chunks that pass the injection scan."""
+def _filter_safe_chunks(chunks: list[Chunk], guard: InjectionGuard) -> list[Chunk]:
     return [c for c in chunks if not isinstance(guard.scan(c.text), InjectionDetected)]
 
 
 def _build_messages(symbol: str, chunks: list[Chunk]) -> list[LLMMessage]:
-    """Build the system + user message list for claim extraction."""
     excerpts = "\n\n".join(f"[chunk_id={c.chunk_id}]\n{c.text}" for c in chunks)
     user_content = (
         f"Symbol: {symbol}\n\nNews excerpts:\n{excerpts}\n\nExtract key claims as a JSON array."
@@ -152,10 +68,6 @@ def _build_messages(symbol: str, chunks: list[Chunk]) -> list[LLMMessage]:
 
 
 def _parse_claims(content: str, chunks: list[Chunk]) -> list[Claim]:
-    """Parse LLM output into a list of Claim objects with source attribution.
-
-    Falls back to an empty list rather than raising on malformed output.
-    """
     chunk_map = {c.chunk_id: c.source_url for c in chunks}
     try:
         raw = json.loads(content)
