@@ -20,27 +20,36 @@ Dependency injection:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
+from firm.agents.bear_researcher import BearFailure, BearInput, BearResearcherAgent
+from firm.agents.bull_researcher import BullFailure, BullInput, BullResearcherAgent
 from firm.agents.execution import ExecutionAgent, ExecutionInput
-from firm.agents.judge import JudgeAgent, JudgeInput
+from firm.agents.judge import JudgeAgent, JudgeFailure, JudgeInput
 from firm.agents.portfolio_manager import PMInput, PortfolioManagerAgent
 from firm.agents.reporting import ReportingAgent, ReportingInput
 from firm.agents.research import ResearchAgent, ResearchInput
+from firm.agents.research_manager import (
+    ResearchManagerAgent,
+    ResearchManagerFailure,
+    ResearchManagerInput,
+)
 from firm.agents.risk import ApprovedTrade, RiskAgent, RiskInput
 from firm.agents.risk import HITLRequired as AgentHITLRequired
 from firm.agents.synthesis import SynthesisInput, SynthesisReportAgent
 from firm.agents.technical import TechnicalAnalysisAgent, TechnicalInput
 from firm.config.settings import RiskPolicyConfig
 from firm.domain import Portfolio
+from firm.domain.enums import CycleOutcome, HITLStatus, RefusalReason
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.orchestration.state import GraphState
 from firm.persistence.ledger import LedgerRepository
@@ -48,6 +57,9 @@ from firm.ports.evidence import EvidenceStore
 from firm.ports.llm import LLM
 from firm.ports.market_data import MarketDataSource
 from firm.ports.report import ReportSink
+from firm.utils import str_to_uuid
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Port container (injected at graph-build time)
@@ -122,6 +134,7 @@ def make_pm_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
         evidence_raw = state.get("evidence")
         evidence = _deserialise_evidence(evidence_raw)
         technical = _deserialise_technical_signal(state.get("technical_signal"))
+        research_plan = _deserialise_research_plan(state.get("research_plan"))
         inp = PMInput(
             symbol=symbol,
             evidence=evidence,
@@ -129,6 +142,7 @@ def make_pm_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
             decision_ts=decision_ts,
             correlation_id=correlation_id,
             technical_signal=technical,
+            research_plan=research_plan,
         )
         result = agent.run(inp)
         return {"trade_proposal": result.model_dump(mode="json")}
@@ -158,7 +172,7 @@ def make_risk_node(
     ) -> dict[str, Any]:
         proposal_raw = state.get("trade_proposal")
         if proposal_raw is None:
-            return {"cycle_outcome": "error", "error": "trade_proposal missing in risk_node"}
+            return {"cycle_outcome": CycleOutcome.ERROR, "error": "trade_proposal missing in risk_node"}
 
         proposal = _deserialise_proposal(proposal_raw)
         if ports is None:
@@ -215,8 +229,8 @@ def _map_risk_result(risk_result: object, proposal_raw: dict[str, Any]) -> dict[
     if isinstance(risk_result, ApprovedTrade):
         return {"approved_trade": risk_result.model_dump(mode="json")}
     if isinstance(risk_result, Rejected):
-        return {"cycle_outcome": "rejected"}
-    return {"cycle_outcome": "error", "error": f"unexpected risk result: {risk_result!r}"}
+        return {"cycle_outcome": CycleOutcome.REJECTED}
+    return {"cycle_outcome": CycleOutcome.ERROR, "error": f"unexpected risk result: {risk_result!r}"}
 
 
 def _route_hitl(hitl_status: str | None, pending_approved: ApprovedTrade) -> dict[str, Any]:
@@ -226,14 +240,14 @@ def _route_hitl(hitl_status: str | None, pending_approved: ApprovedTrade) -> dic
     that the same Trade object (same UUID + idempotency_key) is used whether
     the human approves immediately or after a delay.
     """
-    if hitl_status == "rejected":
-        return {"cycle_outcome": "rejected"}
-    if hitl_status == "expired":
-        return {"cycle_outcome": "rejected_timeout"}
-    if hitl_status == "approved":
+    if hitl_status == HITLStatus.REJECTED:
+        return {"cycle_outcome": CycleOutcome.REJECTED}
+    if hitl_status == HITLStatus.EXPIRED:
+        return {"cycle_outcome": CycleOutcome.REJECTED_TIMEOUT}
+    if hitl_status == HITLStatus.APPROVED:
         return {"approved_trade": pending_approved.model_dump(mode="json")}
     return {
-        "cycle_outcome": "error",
+        "cycle_outcome": CycleOutcome.ERROR,
         "error": f"unexpected hitl_status after resume: {hitl_status!r}",
     }
 
@@ -282,12 +296,12 @@ def make_execution_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
 
         approved_raw = state.get("approved_trade")
         if approved_raw is None:
-            return {"cycle_outcome": "error", "error": "approved_trade missing in execution_node"}
+            return {"cycle_outcome": CycleOutcome.ERROR, "error": "approved_trade missing in execution_node"}
 
         correlation_id = state.get("correlation_id", "")
         approved = _deserialise_approved_trade(approved_raw)
         if approved is None:
-            return {"cycle_outcome": "error", "error": "approved_trade could not be deserialised"}
+            return {"cycle_outcome": CycleOutcome.ERROR, "error": "approved_trade could not be deserialised"}
 
         trade = approved.trade
         prices = {trade.symbol: trade.requested_price}
@@ -300,8 +314,8 @@ def make_execution_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
         )
         result = agent.run(inp)
         if isinstance(result, Fill):
-            return {"cycle_outcome": "filled"}
-        return {"cycle_outcome": "error", "error": result.reason}
+            return {"cycle_outcome": CycleOutcome.FILLED}
+        return {"cycle_outcome": CycleOutcome.ERROR, "error": result.reason}
 
     return execution_node
 
@@ -321,7 +335,7 @@ def make_reporting_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
         correlation_id = state.get("correlation_id", "")
         decision_ts_str = state.get("decision_ts", "")
         decision_ts = _parse_datetime(decision_ts_str)
-        cycle_id = _str_to_uuid(correlation_id)
+        cycle_id = str_to_uuid(correlation_id)
         inp = ReportingInput(
             cycle_id=cycle_id,
             portfolio_id=ports.portfolio_id,
@@ -329,12 +343,110 @@ def make_reporting_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
             correlation_id=correlation_id,
         )
         result = agent.run(inp)
-        outcome = state.get("cycle_outcome", "filled")
+        outcome = state.get("cycle_outcome", CycleOutcome.FILLED)
         if isinstance(result, ReportFailure):
             return {"cycle_outcome": outcome}  # degrade gracefully; don't overwrite outcome
         return {"cycle_outcome": outcome}
 
     return reporting_node
+
+
+# ---------------------------------------------------------------------------
+# Debate nodes (bull → bear loop → research manager)
+# ---------------------------------------------------------------------------
+
+MAX_DEBATE_ROUNDS = 1  # one full bull+bear exchange by default
+
+
+def make_bull_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
+    agent = BullResearcherAgent(llm=ports.llm)
+
+    def bull_node(state: GraphState) -> dict[str, Any]:
+        symbol = state.get("symbol", "")
+        correlation_id = state.get("correlation_id", "")
+        rounds = state.get("debate_rounds", 0)
+        evidence_summary = _evidence_text(state.get("evidence"))
+        technical_summary = _technical_text(state.get("technical_signal"))
+        bear_history: list[str] = list(state.get("bear_history") or [])
+        inp = BullInput(
+            symbol=symbol,
+            round_num=rounds + 1,
+            correlation_id=correlation_id,
+            evidence_summary=evidence_summary,
+            technical_summary=technical_summary,
+            bear_history=bear_history,
+        )
+        result = agent.run(inp)
+        argument = (
+            f"[Bull unavailable: {result.failure_reason}]"
+            if isinstance(result, BullFailure)
+            else result.argument
+        )
+        existing: list[str] = list(state.get("bull_history") or [])
+        return {"bull_history": [*existing, argument]}
+
+    return bull_node
+
+
+def make_bear_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
+    agent = BearResearcherAgent(llm=ports.llm)
+
+    def bear_node(state: GraphState) -> dict[str, Any]:
+        symbol = state.get("symbol", "")
+        correlation_id = state.get("correlation_id", "")
+        rounds = state.get("debate_rounds", 0)
+        evidence_summary = _evidence_text(state.get("evidence"))
+        technical_summary = _technical_text(state.get("technical_signal"))
+        bull_history: list[str] = list(state.get("bull_history") or [])
+        inp = BearInput(
+            symbol=symbol,
+            round_num=rounds + 1,
+            correlation_id=correlation_id,
+            evidence_summary=evidence_summary,
+            technical_summary=technical_summary,
+            bull_history=bull_history,
+        )
+        result = agent.run(inp)
+        argument = (
+            f"[Bear unavailable: {result.failure_reason}]"
+            if isinstance(result, BearFailure)
+            else result.argument
+        )
+        existing: list[str] = list(state.get("bear_history") or [])
+        return {
+            "bear_history": [*existing, argument],
+            "debate_rounds": rounds + 1,
+        }
+
+    return bear_node
+
+
+def make_research_manager_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
+    agent = ResearchManagerAgent(llm=ports.llm)
+
+    def research_manager_node(state: GraphState) -> dict[str, Any]:
+        symbol = state.get("symbol", "")
+        correlation_id = state.get("correlation_id", "")
+        inp = ResearchManagerInput(
+            symbol=symbol,
+            correlation_id=correlation_id,
+            evidence_summary=_evidence_text(state.get("evidence")),
+            technical_summary=_technical_text(state.get("technical_signal")),
+            bull_history=list(state.get("bull_history") or []),
+            bear_history=list(state.get("bear_history") or []),
+        )
+        result = agent.run(inp)
+        if isinstance(result, ResearchManagerFailure):
+            return {
+                "research_plan": {
+                    "failure_reason": result.failure_reason,
+                    "symbol": result.symbol,
+                    "correlation_id": result.correlation_id,
+                }
+            }
+        return {"research_plan": result.model_dump(mode="json")}
+
+    return research_manager_node
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +498,7 @@ def make_synthesis_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
             correlation_id=correlation_id,
             evidence=state.get("evidence"),
             technical_signal=state.get("technical_signal"),
+            research_plan=state.get("research_plan"),
             trade_proposal=state.get("trade_proposal"),
             cycle_outcome=state.get("cycle_outcome"),
         )
@@ -415,48 +528,17 @@ def make_judge_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
             correlation_id=correlation_id,
             evidence=state.get("evidence"),
             technical_signal=state.get("technical_signal"),
+            research_plan=state.get("research_plan"),
             trade_proposal=state.get("trade_proposal"),
             cycle_outcome=state.get("cycle_outcome"),
             synthesis=state.get("synthesis"),
         )
         result = agent.run(inp)
+        if isinstance(result, JudgeFailure):
+            return {"verdict": {"failure_reason": result.failure_reason, "correlation_id": correlation_id}}
         return {"verdict": result.model_dump(mode="json")}
 
     return judge_node
-
-
-# ---------------------------------------------------------------------------
-# Fallback stubs (used when NodePorts is not provided; for backward compat)
-# ---------------------------------------------------------------------------
-
-
-def research_node(state: GraphState) -> dict[str, Any]:
-    """Pass-through stub — replaced by make_research_node in production."""
-    return {"evidence": {"chunks": [], "summary": "stub"}}
-
-
-def pm_node(state: GraphState) -> dict[str, Any]:
-    """Pass-through stub — replaced by make_pm_node in production."""
-    symbol = state.get("symbol", "")
-    return {
-        "trade_proposal": {
-            "symbol": symbol,
-            "side": "buy",
-            "qty": "10",
-            "notional": "1000",
-            "rationale": "stub",
-        }
-    }
-
-
-def execution_node(state: GraphState) -> dict[str, Any]:
-    """Pass-through stub — replaced by make_execution_node in production."""
-    return {"cycle_outcome": "filled"}
-
-
-def reporting_node(state: GraphState) -> dict[str, Any]:
-    """Pass-through stub — replaced by make_reporting_node in production."""
-    return {"cycle_outcome": state.get("cycle_outcome", "filled")}
 
 
 # ---------------------------------------------------------------------------
@@ -476,12 +558,35 @@ def _parse_datetime(value: str) -> datetime:
         return datetime.now(tz=UTC)
 
 
-def _str_to_uuid(value: str) -> UUID:
-    """Parse *value* as UUID; generate a fresh one on failure."""
+
+def _evidence_text(evidence: dict[str, Any] | None) -> str:
+    if not evidence:
+        return "No fundamental evidence available."
+    claims = evidence.get("claims", [])
+    if not claims:
+        return "Research found no usable claims."
+    return "; ".join(c.get("text", "") for c in claims[:5])
+
+
+def _technical_text(technical: dict[str, Any] | None) -> str:
+    if not technical or "reason" in technical:
+        return "No technical analysis available."
+    bias = technical.get("bias", "neutral")
+    rsi = technical.get("rsi", 0.0)
+    headline = technical.get("headline", "")
+    return f"Bias: {bias} | RSI: {rsi:.1f} | {headline}"
+
+
+def _deserialise_research_plan(raw: dict[str, Any] | None) -> Any:
+    from firm.agents.research_manager.schemas import ResearchPlan
+
+    if raw is None:
+        return None
     try:
-        return UUID(value)
-    except (ValueError, AttributeError):
-        return uuid4()
+        return ResearchPlan.model_validate(raw)
+    except Exception:
+        logger.exception("Failed to deserialise research_plan: %r", raw)
+        return None
 
 
 def _deserialise_technical_signal(raw: dict[str, Any] | None) -> Any:
@@ -494,12 +599,12 @@ def _deserialise_technical_signal(raw: dict[str, Any] | None) -> Any:
         try:
             return TechnicalSignal.model_validate(raw)
         except Exception:
-            pass
+            logger.exception("Failed to deserialise TechnicalSignal: %r", raw)
     if "reason" in raw:
         try:
             return TechnicalUnavailable.model_validate(raw)
         except Exception:
-            pass
+            logger.exception("Failed to deserialise TechnicalUnavailable: %r", raw)
     return None
 
 
@@ -508,18 +613,20 @@ def _deserialise_evidence(raw: dict[str, Any] | None) -> Any:
     from firm.agents.research import Evidence, Refusal
 
     if raw is None:
-        return Refusal(reason="insufficient_evidence")
+        return Refusal(reason=RefusalReason.INSUFFICIENT_EVIDENCE)
     if "claims" in raw:
         try:
             return Evidence.model_validate(raw)
         except Exception:
-            return Refusal(reason="insufficient_evidence")
+            logger.exception("Failed to deserialise Evidence: %r", raw)
+            return Refusal(reason=RefusalReason.INSUFFICIENT_EVIDENCE)
     if "reason" in raw:
         try:
             return Refusal.model_validate(raw)
         except Exception:
-            return Refusal(reason="insufficient_evidence")
-    return Refusal(reason="insufficient_evidence")
+            logger.exception("Failed to deserialise Refusal: %r", raw)
+            return Refusal(reason=RefusalReason.INSUFFICIENT_EVIDENCE)
+    return Refusal(reason=RefusalReason.INSUFFICIENT_EVIDENCE)
 
 
 def _deserialise_proposal(raw: dict[str, Any]) -> Any:
@@ -530,25 +637,21 @@ def _deserialise_proposal(raw: dict[str, Any]) -> Any:
         try:
             return TradeProposal.model_validate(raw)
         except Exception:
-            pass
+            logger.exception("Failed to deserialise TradeProposal: %r", raw)
     if "reason" in raw:
         try:
             return Hold.model_validate(raw)
         except Exception:
-            pass
+            logger.exception("Failed to deserialise Hold: %r", raw)
     symbol = raw.get("symbol", "")
     return Hold(symbol=symbol, reason="deserialisation failed")
 
 
 def _deserialise_approved_trade(raw: dict[str, Any]) -> ApprovedTrade | None:
-    """Deserialise an ``approved_trade`` state value to an ``ApprovedTrade``.
-
-    Returns ``None`` on any parse failure so callers can return a typed error
-    state rather than propagating an exception.
-    """
     try:
         return ApprovedTrade.model_validate(raw)
     except Exception:
+        logger.exception("Failed to deserialise ApprovedTrade: %r", raw)
         return None
 
 

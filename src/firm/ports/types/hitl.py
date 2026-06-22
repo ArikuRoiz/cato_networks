@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel
+
+from firm.domain.enums import ApprovalStatus
 
 
 class HITLRequest(BaseModel):
@@ -24,7 +25,7 @@ class HITLRequest(BaseModel):
 
 
 class ApprovalResult(BaseModel):
-    status: Literal["approved", "rejected", "edited", "expired"]
+    status: ApprovalStatus
     decided_by: str | None = None
     edited_qty: Decimal | None = None
 

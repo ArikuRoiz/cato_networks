@@ -2,9 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 from pydantic import BaseModel
+
+
+class ToolDef(BaseModel):
+    """Specification for a tool the LLM can call."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+    model_config = {"frozen": True}
+
+
+# Maps tool name → callable that executes it and returns a plain-text result.
+ToolExecutors = dict[str, Callable[[dict[str, Any]], str]]
 
 
 class LLMMessage(BaseModel):

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Literal, TypedDict, cast
 
 from firm.ports.llm import LLM
-from firm.ports.types import LLMError, LLMMessage, LLMResponse
+from firm.ports.types import LLMError, LLMMessage, LLMResponse, ToolDef, ToolExecutors
 
 
 class CassetteNotFound(Exception):
@@ -183,6 +183,33 @@ class CassetteLLM(LLM):
         key = _compute_key(model, messages)
         if self._mode == "record":
             return self._record(key, messages, model=model, max_tokens=max_tokens)
+        return self._replay(key)
+
+    def complete_with_tools(
+        self,
+        messages: list[LLMMessage],
+        tools: list[ToolDef],
+        executors: ToolExecutors,
+        *,
+        model: str,
+        max_tokens: int,
+        max_rounds: int = 5,
+    ) -> LLMResponse | LLMError:
+        """Record/replay the final tool-loop response via complete().
+
+        In record mode the inner LLM runs the full tool loop and the final
+        text response is stored in the cassette.  In replay mode the cassette
+        serves the stored final response without running any tools.
+        """
+        key_messages = [*messages, LLMMessage(role="user", content=f"__tools__:{','.join(t.name for t in tools)}")]
+        if self._mode == "record":
+            inner = self._require_inner()
+            result = inner.complete_with_tools(messages, tools, executors, model=model, max_tokens=max_tokens, max_rounds=max_rounds)
+            if isinstance(result, LLMResponse):
+                key = _compute_key(model, key_messages)
+                _append_entry(self._cassette_path, key, result)
+            return result
+        key = _compute_key(model, key_messages)
         return self._replay(key)
 
     def count_tokens(

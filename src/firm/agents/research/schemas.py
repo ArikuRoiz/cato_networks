@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel
+
+from firm.domain.enums import RefusalReason
 
 
 class ResearchInput(BaseModel):
@@ -35,12 +36,6 @@ class Evidence(BaseModel):
 class Refusal(BaseModel):
     """Research could not proceed — failure is a value, not an exception."""
 
-    reason: Literal[
-        "insufficient_evidence",
-        "store_unavailable",
-        "injection_detected",
-        "llm_error_retryable",
-        "llm_error_non_retryable",
-    ]
+    reason: RefusalReason
 
     model_config = {"frozen": True}

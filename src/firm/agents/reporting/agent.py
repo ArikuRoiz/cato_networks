@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from decimal import Decimal
 from uuid import UUID
@@ -12,6 +13,8 @@ from firm.domain import Portfolio, Trade
 from firm.persistence.ledger import LedgerRepository
 from firm.ports.report import ReportSink
 from firm.ports.types import DailyReport, PositionRecord, TradeRecord
+
+logger = logging.getLogger(__name__)
 
 
 class ReportingAgent(BaseAgent[ReportingInput, ReportSent | ReportFailure]):
@@ -38,9 +41,9 @@ class ReportingAgent(BaseAgent[ReportingInput, ReportSent | ReportFailure]):
 
 def _load_trades(ledger: LedgerRepository, cycle_id: UUID) -> list[TradeRecord]:
     try:
-        raw: list[Trade] = ledger.get_trades_for_cycle(cycle_id)
-        return [_trade_to_record(t) for t in raw]
+        return [_trade_to_record(t) for t in ledger.get_trades_for_cycle(cycle_id)]
     except Exception:
+        logger.exception("Failed to load trades for cycle %s", cycle_id)
         return []
 
 

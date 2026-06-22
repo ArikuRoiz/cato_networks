@@ -12,7 +12,7 @@ Public surface
 ``reset_correlation_id`` — restore the previous value via a Token.
 """
 
-from firm.observability.setup import setup_telemetry
+from firm.observability.setup import flush_telemetry, setup_telemetry
 from firm.observability.tracing import (
     get_correlation_id,
     log_trade_event,
@@ -24,6 +24,7 @@ from firm.observability.tracing import (
 )
 
 __all__ = [
+    "flush_telemetry",
     "get_correlation_id",
     "log_trade_event",
     "reset_correlation_id",

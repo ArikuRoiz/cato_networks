@@ -1,1 +1,1 @@
-Protocol interfaces (MarketDataSource, EvidenceStore, LLM, ReportSink) — the live/replay IO seam.
+Protocol interfaces — the live/replay IO seam. LLM port has two methods: complete() for single-shot agents and complete_with_tools() for tool-using agents (research, technical). Both are cassette-recordable.

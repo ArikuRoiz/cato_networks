@@ -79,12 +79,22 @@ def _proposal_summary(proposal: dict | None) -> str:  # type: ignore[type-arg]
     return f"Hold — {proposal.get('reason', 'unknown reason')}"
 
 
+def _research_plan_summary(plan: dict | None) -> str:  # type: ignore[type-arg]
+    if not plan or "failure_reason" in plan:
+        return "Research plan unavailable."
+    rec = plan.get("recommendation", "unknown")
+    conviction = float(plan.get("conviction", 0.0))
+    rationale = plan.get("rationale", "")
+    return f"Recommendation: {rec} (conviction: {conviction:.0%}). {rationale}"
+
+
 def _build_messages(inp: SynthesisInput) -> list[LLMMessage]:
     date_str = inp.decision_ts.strftime("%Y-%m-%d")
     user = (
         f"Investment decision memo for {inp.symbol} — {date_str}\n\n"
         f"FUNDAMENTAL EVIDENCE (Research Agent):\n{_evidence_summary(inp.evidence)}\n\n"
         f"TECHNICAL ANALYSIS:\n{_technical_summary(inp.technical_signal)}\n\n"
+        f"DEBATE OUTCOME (Research Manager):\n{_research_plan_summary(inp.research_plan)}\n\n"
         f"PORTFOLIO MANAGER DECISION:\n{_proposal_summary(inp.trade_proposal)}\n\n"
         f"CYCLE OUTCOME: {inp.cycle_outcome or 'unknown'}\n\n"
         f"Write a professional investment memo. Respond ONLY with:\n{_JSON_SCHEMA}"
@@ -105,6 +115,8 @@ def _parse_report(inp: SynthesisInput, content: str) -> SynthesisReport | Synthe
         raw = json.loads(content.strip())
     except json.JSONDecodeError:
         return SynthesisFailure(reason="llm returned invalid JSON")
+    if not isinstance(raw, dict):
+        return SynthesisFailure(reason="llm returned non-object JSON")
 
     return SynthesisReport(
         symbol=inp.symbol,

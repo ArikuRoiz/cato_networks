@@ -1,9 +1,14 @@
-"""TechnicalAnalysisAgent — compute RSI/MACD/Bollinger and generate an LLM narrative."""
+"""TechnicalAnalysisAgent — tool-using agent that fetches price data and generates analysis.
+
+The LLM calls ``get_price_and_indicators`` to retrieve OHLCV bars and computed
+RSI/MACD/Bollinger values, then produces a structured JSON signal.  The LLM
+controls what lookback window it requests rather than receiving a fixed dataset.
+"""
 
 from __future__ import annotations
 
-import json
 from datetime import timedelta
+from typing import Any
 
 from firm.agents.base import BaseAgent
 from firm.agents.technical.schemas import (
@@ -11,15 +16,35 @@ from firm.agents.technical.schemas import (
     TechnicalSignal,
     TechnicalUnavailable,
 )
-from firm.domain import Bar
+from firm.domain.enums import MACDCross, TechnicalBias
 from firm.ports.llm import LLM
 from firm.ports.market_data import MarketDataSource
-from firm.ports.types import LLMError, LLMMessage
+from firm.ports.types import LLMError, LLMMessage, ToolDef
+from firm.strategy import compute_indicators
+from firm.utils import parse_json_dict
 
-_LOOKBACK_DAYS = 35  # enough for MACD(26) + buffer
 _SYSTEM_PROMPT = (
-    "You are a senior quantitative analyst writing for an internal trading report. "
-    "Respond ONLY with valid JSON, no markdown fences, no extra text."
+    "You are a senior quantitative analyst. "
+    "Use the get_price_and_indicators tool to retrieve market data, then "
+    "respond ONLY with valid JSON — no markdown fences, no extra text:\n"
+    '{"headline":"<one sentence ≤80 chars>","body":"<2-3 sentence analysis>",'
+    '"bias":"bullish"|"bearish"|"neutral","key_support":<float>,"key_resistance":<float>}'
+)
+
+_PRICE_TOOL = ToolDef(
+    name="get_price_and_indicators",
+    description="Retrieve recent OHLCV price bars and computed technical indicators (RSI, MACD, Bollinger Bands) for the symbol.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "lookback_days": {
+                "type": "integer",
+                "description": "Number of calendar days of history to fetch (default 40, max 90)",
+                "default": 40,
+            },
+        },
+        "required": [],
+    },
 )
 
 
@@ -29,156 +54,79 @@ class TechnicalAnalysisAgent(BaseAgent[TechnicalInput, TechnicalSignal | Technic
         self._llm = llm
 
     def run(self, inp: TechnicalInput) -> TechnicalSignal | TechnicalUnavailable:
-        start = inp.decision_ts - timedelta(days=_LOOKBACK_DAYS + 5)
-        bars = self._market_data.get_bars(inp.symbol, start, inp.decision_ts)
-        if len(bars) < 14:
-            return TechnicalUnavailable(symbol=inp.symbol, reason="insufficient price history")
+        indicators_snapshot: dict[str, float] = {}
+        last_close: float = 0.0
 
-        indicators = _compute_indicators(bars)
-        messages = _build_messages(inp.symbol, indicators, bars[-1])
-        resp = self._llm.complete(messages, model="haiku", max_tokens=512)
+        def get_price_and_indicators(args: dict[str, Any]) -> str:
+            nonlocal indicators_snapshot, last_close
+            lookback = min(int(args.get("lookback_days", 40)), 90)
+            start = inp.decision_ts - timedelta(days=lookback + 5)
+            bars = self._market_data.get_bars(inp.symbol, start, inp.decision_ts)
+            if len(bars) < 14:
+                return f"Insufficient price history for {inp.symbol}: only {len(bars)} bars available."
+            ind = compute_indicators(bars)
+            indicators_snapshot = ind
+            last_close = float(bars[-1].close)
+            rsi_label = "overbought" if ind["rsi"] > 70 else "oversold" if ind["rsi"] < 30 else "neutral"
+            macd_label = "bullish" if ind["histogram"] > 0 else "bearish"
+            return (
+                f"Technical indicators for {inp.symbol} (close {last_close:.2f}):\n"
+                f"- RSI(14): {ind['rsi']:.1f} ({rsi_label})\n"
+                f"- MACD: {ind['macd']:.4f} | Signal: {ind['signal']:.4f} | "
+                f"Histogram: {ind['histogram']:.4f} ({macd_label} momentum)\n"
+                f"- Bollinger Bands (20,2): upper={ind['bb_upper']:.2f} | "
+                f"mid={ind['bb_mid']:.2f} | lower={ind['bb_lower']:.2f}\n"
+                f"- BB position: {ind['bb_position']:.1%} (0%=lower band, 100%=upper band)\n"
+                f"- 10-day avg volume: {ind['avg_volume']:,.0f}"
+            )
+
+        messages = [
+            LLMMessage(role="system", content=_SYSTEM_PROMPT),
+            LLMMessage(
+                role="user",
+                content=f"Analyze the technical picture for {inp.symbol} as of {inp.decision_ts.date()}.",
+            ),
+        ]
+
+        resp = self._llm.complete_with_tools(
+            messages,
+            tools=[_PRICE_TOOL],
+            executors={"get_price_and_indicators": get_price_and_indicators},
+            model="haiku",
+            max_tokens=512,
+            max_rounds=3,
+        )
 
         if isinstance(resp, LLMError):
             return TechnicalUnavailable(symbol=inp.symbol, reason=f"llm_error: {resp.message}")
 
-        return _parse_signal(inp.symbol, resp.content, indicators, bars[-1])
+        if not indicators_snapshot:
+            return TechnicalUnavailable(symbol=inp.symbol, reason="insufficient price history")
+
+        return _parse_signal(inp.symbol, resp.content, indicators_snapshot, last_close)
 
 
-# ---------------------------------------------------------------------------
-# Indicator math (pure, no side effects)
-# ---------------------------------------------------------------------------
-
-
-def _compute_indicators(bars: list[Bar]) -> dict[str, float]:
-    closes = [float(b.close) for b in bars]
-    volumes = [int(b.volume) for b in bars]
-
-    rsi = _rsi(closes)
-    macd_line, signal_line = _macd(closes)
-    upper, mid, lower = _bollinger(closes)
-    price = closes[-1]
-
-    bb_position = (price - lower) / (upper - lower) if upper != lower else 0.5
-    avg_vol = sum(volumes[-10:]) / min(len(volumes), 10)
-
-    return {
-        "rsi": rsi,
-        "macd": macd_line,
-        "signal": signal_line,
-        "histogram": macd_line - signal_line,
-        "bb_upper": upper,
-        "bb_mid": mid,
-        "bb_lower": lower,
-        "bb_position": bb_position,
-        "avg_volume": avg_vol,
-    }
-
-
-def _rsi(closes: list[float], period: int = 14) -> float:
-    if len(closes) < period + 1:
-        return 50.0
-    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
-    recent = deltas[-period:]
-    gains = [max(d, 0.0) for d in recent]
-    losses = [max(-d, 0.0) for d in recent]
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    if avg_loss == 0.0:
-        return 100.0
-    return 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
-
-
-def _ema(values: list[float], period: int) -> float:
-    if not values:
-        return 0.0
-    k = 2.0 / (period + 1)
-    ema = values[0]
-    for v in values[1:]:
-        ema = v * k + ema * (1.0 - k)
-    return ema
-
-
-def _macd(closes: list[float]) -> tuple[float, float]:
-    if len(closes) < 26:
-        return 0.0, 0.0
-    ema12 = _ema(closes[-26:], 12)
-    ema26 = _ema(closes[-26:], 26)
-    macd_line = ema12 - ema26
-    signal_line = macd_line * 0.9  # 9-period approximation for small datasets
-    return macd_line, signal_line
-
-
-def _bollinger(closes: list[float], period: int = 20) -> tuple[float, float, float]:
-    window = closes[-period:] if len(closes) >= period else closes
-    mid = sum(window) / len(window)
-    variance = sum((x - mid) ** 2 for x in window) / len(window)
-    std = variance**0.5
-    return mid + 2 * std, mid, mid - 2 * std
-
-
-# ---------------------------------------------------------------------------
-# LLM prompt + response parsing
-# ---------------------------------------------------------------------------
-
-
-def _build_messages(
-    symbol: str,
-    ind: dict[str, float],
-    bar: Bar,
-) -> list[LLMMessage]:
-    rsi_label = "overbought" if ind["rsi"] > 70 else "oversold" if ind["rsi"] < 30 else "neutral"
-    macd_cross = "bullish" if ind["histogram"] > 0 else "bearish"
-
-    user = (
-        f"Technical indicators for {symbol} (closing price {float(bar.close):.2f}):\n"
-        f"- RSI(14): {ind['rsi']:.1f} ({rsi_label})\n"
-        f"- MACD: {ind['macd']:.4f} | Signal: {ind['signal']:.4f} | "
-        f"Histogram: {ind['histogram']:.4f} ({macd_cross} momentum)\n"
-        f"- Bollinger Bands (20,2): upper={ind['bb_upper']:.2f} | "
-        f"mid={ind['bb_mid']:.2f} | lower={ind['bb_lower']:.2f}\n"
-        f"- BB position: {ind['bb_position']:.1%} (0%=lower band, 100%=upper band)\n"
-        f"- 10-day avg volume: {ind['avg_volume']:,.0f}\n\n"
-        "Respond ONLY with this JSON (no markdown):\n"
-        '{"headline":"<one sentence ≤80 chars>","body":"<2-3 sentence professional analysis>",'
-        '"bias":"bullish"|"bearish"|"neutral","key_support":<float>,"key_resistance":<float>}'
-    )
-    return [
-        LLMMessage(role="system", content=_SYSTEM_PROMPT),
-        LLMMessage(role="user", content=user),
-    ]
-
-
-def _parse_signal(
-    symbol: str,
-    content: str,
-    ind: dict[str, float],
-    bar: Bar,
-) -> TechnicalSignal | TechnicalUnavailable:
-    try:
-        raw = json.loads(content.strip())
-    except json.JSONDecodeError:
+def _parse_signal(symbol: str, content: str, ind: dict[str, float], close: float) -> TechnicalSignal | TechnicalUnavailable:
+    raw = parse_json_dict(content)
+    if raw is None:
         return TechnicalUnavailable(symbol=symbol, reason="llm returned invalid JSON")
 
-    macd_cross: str
     if ind["histogram"] > 0.001:
-        macd_cross = "bullish"
+        macd_cross = MACDCross.BULLISH
     elif ind["histogram"] < -0.001:
-        macd_cross = "bearish"
+        macd_cross = MACDCross.BEARISH
     else:
-        macd_cross = "none"
+        macd_cross = MACDCross.NONE
 
-    price = float(bar.close)
     return TechnicalSignal(
         symbol=symbol,
         headline=str(raw.get("headline", "Technical analysis unavailable"))[:120],
         body=str(raw.get("body", "")),
-        bias=raw.get("bias", "neutral")
-        if raw.get("bias") in ("bullish", "bearish", "neutral")
-        else "neutral",
+        bias=TechnicalBias(raw["bias"]) if raw.get("bias") in {b.value for b in TechnicalBias} else TechnicalBias.NEUTRAL,
         rsi=round(ind["rsi"], 2),
         macd=round(ind["macd"], 4),
-        macd_cross=macd_cross,  # type: ignore[arg-type]
+        macd_cross=macd_cross,
         bb_position=round(ind["bb_position"], 3),
-        key_support=float(raw.get("key_support", round(price * 0.97, 2))),
-        key_resistance=float(raw.get("key_resistance", round(price * 1.03, 2))),
+        key_support=float(raw.get("key_support", round(close * 0.97, 2))),
+        key_resistance=float(raw.get("key_resistance", round(close * 1.03, 2))),
     )

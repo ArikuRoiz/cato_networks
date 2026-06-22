@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel
+
+from firm.domain.enums import MACDCross, TechnicalBias
 
 
 class TechnicalInput(BaseModel):
@@ -26,10 +27,10 @@ class TechnicalSignal(BaseModel):
     symbol: str
     headline: str
     body: str
-    bias: Literal["bullish", "bearish", "neutral"]
+    bias: TechnicalBias
     rsi: float
     macd: float
-    macd_cross: Literal["bullish", "bearish", "none"]
+    macd_cross: MACDCross
     bb_position: float  # 0.0 = price at lower band, 1.0 = at upper band
     key_support: float
     key_resistance: float

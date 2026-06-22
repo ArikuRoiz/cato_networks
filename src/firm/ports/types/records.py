@@ -1,15 +1,13 @@
-"""Reporting record types (TypedDicts) and DailyReport."""
-
 from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from pydantic import BaseModel
 
 
-class TradeRecord(TypedDict, total=False):
+class TradeRecord(TypedDict):
     cycle_id: str
     symbol: str
     side: str
@@ -18,10 +16,10 @@ class TradeRecord(TypedDict, total=False):
     slippage: float
     commission: float
     status: str
-    ts: str
+    ts: NotRequired[str]
 
 
-class PositionRecord(TypedDict, total=False):
+class PositionRecord(TypedDict):
     symbol: str
     qty: float
     avg_cost: float
@@ -29,7 +27,7 @@ class PositionRecord(TypedDict, total=False):
     unrealized_pnl: float
 
 
-class CitationRecord(TypedDict, total=False):
+class CitationRecord(TypedDict):
     source_url: str
     chunk_id: str
     published_at: str

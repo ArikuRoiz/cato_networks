@@ -1,1 +1,1 @@
-Five typed agents (Research, PortfolioManager, Risk, Execution, Reporting) with Pydantic I/O schemas.
+11-agent pipeline. Tool-using agents (research, technical) call LLM.complete_with_tools(); all others use single-shot LLM.complete() or are pure functions (risk, execution, reporting).

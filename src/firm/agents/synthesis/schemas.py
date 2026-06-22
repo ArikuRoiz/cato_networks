@@ -14,6 +14,7 @@ class SynthesisInput(BaseModel):
     correlation_id: str
     evidence: dict[str, Any] | None = None
     technical_signal: dict[str, Any] | None = None
+    research_plan: dict[str, Any] | None = None
     trade_proposal: dict[str, Any] | None = None
     cycle_outcome: str | None = None
 

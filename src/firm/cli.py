@@ -37,7 +37,23 @@ if TYPE_CHECKING:
 
 def _project_root() -> Path:
     """Return the project root directory (three levels above this file)."""
-    return Path(__file__).parent.parent.parent.parent
+    return Path(__file__).parent.parent.parent
+
+
+def _load_dotenv() -> None:
+    """Load .env from the project root into os.environ if not already set."""
+    env_path = _project_root() / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def _emit(record: dict[str, Any]) -> None:
@@ -247,26 +263,38 @@ def _build_pipeline(root: Path, initial_cash: Any) -> tuple[Any, Any, Any]:
 
     Returns (graph, portfolio, portfolio_id).
     """
-    from eval.replay import _build_eval_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
     from firm.adapters.market_data_frozen import FrozenMarketData
+    from firm.adapters.report import FileReportSink
+    from firm.orchestration.graph import build_graph
+    from firm.orchestration.nodes import NodePorts
 
     risk_policy_config = _safe_load_risk_policy(root)
     portfolio, portfolio_id, guardrail, injection_guard, ledger = _build_domain_objects(
         risk_policy_config, initial_cash
     )
-    research, pm, risk, execution, reporting = _build_agents(
-        root, risk_policy_config, guardrail, injection_guard, ledger
-    )
     market_data = FrozenMarketData(root / "data" / "bars")
-    graph = _build_eval_graph(
-        research_agent=research,
-        pm_agent=pm,
-        risk_agent=risk,
-        execution_agent=execution,
-        reporting_agent=reporting,
-        portfolio=portfolio,
-        portfolio_id=portfolio_id,
+    evidence_store = _build_evidence_store(root / "data" / "news" / "corpus.json")
+    llm = _build_demo_llm(root / "data" / "cassettes" / "eval.jsonl")
+    reports_dir = root / "reports"
+
+    ports = NodePorts(
+        evidence=evidence_store,
+        llm=llm,
         market_data=market_data,
+        ledger=ledger,
+        report_sink=FileReportSink(output_dir=reports_dir),
+        guardrail=guardrail,
+        injection_guard=injection_guard,
+        risk_policy=risk_policy_config,
+        portfolio_id=portfolio_id,
+        portfolio=portfolio,
+    )
+    graph = build_graph(
+        checkpointer=MemorySaver(),
+        risk_policy=risk_policy_config,
+        ports=ports,
     )
     return graph, portfolio, portfolio_id
 
@@ -277,16 +305,21 @@ def _emit_cycle_done(
     final_state: dict[str, Any],
 ) -> None:
     """Emit a cycle_done NDJSON record from *final_state*."""
+    verdict = final_state.get("verdict") or {}
+    synthesis = final_state.get("synthesis") or {}
     _emit(
         {
             "event": "cycle_done",
             "symbol": symbol,
             "correlation_id": correlation_id,
             "outcome": final_state.get("cycle_outcome", "unknown"),
-            "research_result": _summarise(final_state.get("research_result")),
-            "pm_result": _summarise(final_state.get("pm_result")),
-            "risk_result": _summarise(final_state.get("risk_result")),
-            "exec_result": _summarise(final_state.get("exec_result")),
+            "evidence": _summarise(final_state.get("evidence")),
+            "trade_proposal": _summarise(final_state.get("trade_proposal")),
+            "research_plan": _summarise(final_state.get("research_plan")),
+            "technical_signal": _summarise(final_state.get("technical_signal")),
+            "synthesis_title": synthesis.get("title", "none"),
+            "judge_score": verdict.get("coherence_score", "none"),
+            "judge_alignment": verdict.get("alignment", "none"),
         }
     )
 
@@ -308,20 +341,54 @@ def _invoke_one_symbol(
             "correlation_id": correlation_id,
         }
     )
-    initial_state = {"symbol": symbol, "decision_ts": decision_ts, "correlation_id": correlation_id}
+    initial_state = {
+        "symbol": symbol,
+        "decision_ts": decision_ts.isoformat(),
+        "correlation_id": correlation_id,
+    }
     config: dict[str, Any] = {"configurable": {"thread_id": str(uuid.uuid4())}}
     try:
-        final_state: dict[str, Any] = graph.invoke(initial_state, config=config)
-        _emit_cycle_done(symbol, correlation_id, final_state)
-    except Exception as exc:
-        _emit(
-            {
-                "event": "cycle_error",
-                "symbol": symbol,
-                "correlation_id": correlation_id,
-                "error": str(exc),
-            }
-        )
+        from langfuse.decorators import langfuse_context, observe
+
+        @observe(name=f"decision_cycle.{symbol}")  # type: ignore[untyped-decorator]
+        def _traced_cycle() -> None:
+            langfuse_context.update_current_observation(
+                input={"symbol": symbol, "decision_ts": decision_ts.isoformat()},
+                metadata={"correlation_id": correlation_id},
+            )
+            try:
+                final_state: dict[str, Any] = graph.invoke(initial_state, config=config)
+                outcome = final_state.get("cycle_outcome", "unknown")
+                langfuse_context.update_current_observation(output={"outcome": outcome})
+                _emit_cycle_done(symbol, correlation_id, final_state)
+            except Exception as exc:
+                langfuse_context.update_current_observation(level="ERROR", status_message=str(exc))
+                _emit(
+                    {
+                        "event": "cycle_error",
+                        "symbol": symbol,
+                        "correlation_id": correlation_id,
+                        "error": str(exc),
+                    }
+                )
+
+        _traced_cycle()
+    except ImportError as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("Langfuse unavailable, running untraced: %s", exc)
+        try:
+            final_state = graph.invoke(initial_state, config=config)
+            _emit_cycle_done(symbol, correlation_id, final_state)
+        except Exception as graph_exc:
+            _emit(
+                {
+                    "event": "cycle_error",
+                    "symbol": symbol,
+                    "correlation_id": correlation_id,
+                    "error": str(graph_exc),
+                }
+            )
 
 
 def _run_graph_loop(
@@ -342,18 +409,29 @@ def _load_corpus_docs(corpus_path: Path) -> list[Any]:
 
 
 def _build_demo_llm(cassette_path: Path) -> CassetteLLM | FakeLLM:
-    """Return CassetteLLM if cassette exists, else FakeLLM.
+    """Return CassetteLLM in record mode when an API key is set, else FakeLLM.
 
-    Reads CASSETTE_MODE from the environment (default: 'replay') so that CI
-    can set ``CASSETTE_MODE=replay`` and the adapter honours it automatically.
+    - CASSETTE_MODE=replay: force replay (fails on miss; useful for CI with a full cassette)
+    - CASSETTE_MODE=record (or ANTHROPIC_API_KEY set): record live calls into the cassette
+    - default (no API key, no CASSETTE_MODE): FakeLLM so demo runs offline without errors
     """
     from firm.adapters.fakes import FakeLLM
     from firm.adapters.llm_cassette import CassetteLLM
     from firm.ports.types import LLMResponse
 
-    mode = os.environ.get("CASSETTE_MODE", "replay")
-    if cassette_path.exists() and cassette_path.stat().st_size > 0:
-        return CassetteLLM(cassette_path=cassette_path, mode=mode)  # type: ignore[arg-type]
+    explicit_mode = os.environ.get("CASSETTE_MODE", "")
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    if explicit_mode == "replay" and cassette_path.exists() and cassette_path.stat().st_size > 0:
+        return CassetteLLM(cassette_path=cassette_path, mode="replay")
+
+    if api_key or explicit_mode == "record":
+        from firm.adapters.llm_anthropic import AnthropicLLM
+
+        cassette_path.parent.mkdir(parents=True, exist_ok=True)
+        inner = AnthropicLLM(api_key=api_key)
+        return CassetteLLM(cassette_path=cassette_path, mode="record", inner=inner)
+
     canned = LLMResponse(content="[]", input_tokens=10, output_tokens=2, model="claude-haiku-4-5")
     return FakeLLM(responses=[canned] * 500)
 
@@ -386,12 +464,14 @@ def _safe_load_risk_policy(root: Path) -> RiskPolicyConfig:
     )
 
 
-def _summarise(value: dict[str, Any] | None) -> str:
+def _summarise(value: Any) -> str:
     """Return a short human-readable summary of an agent result."""
     if value is None:
         return "none"
-    keys = list(value.keys())[:4]
-    return f"dict({', '.join(keys)})"
+    if isinstance(value, dict):
+        keys = list(value.keys())[:4]
+        return f"dict({', '.join(keys)})"
+    return type(value).__name__
 
 
 # ---------------------------------------------------------------------------
@@ -596,6 +676,10 @@ def _add_trace_subcommand(sub: Any) -> None:
 
 def main() -> None:
     """Entry point invoked by pyproject.toml [project.scripts] and python -m firm.cli."""
+    _load_dotenv()
+    from firm.observability import setup_telemetry
+
+    setup_telemetry()
     parser = _build_parser()
     args = parser.parse_args()
 
@@ -606,3 +690,10 @@ def main() -> None:
         "trace": _cmd_trace,
     }
     dispatch[args.command](args)
+    from firm.observability import flush_telemetry
+
+    flush_telemetry()
+
+
+if __name__ == "__main__":
+    main()

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from firm.domain.enums import VerdictAlignment
 
 
 class JudgeInput(BaseModel):
@@ -14,6 +16,7 @@ class JudgeInput(BaseModel):
     correlation_id: str
     evidence: dict[str, Any] | None = None
     technical_signal: dict[str, Any] | None = None
+    research_plan: dict[str, Any] | None = None
     trade_proposal: dict[str, Any] | None = None
     cycle_outcome: str | None = None
     synthesis: dict[str, Any] | None = None
@@ -29,10 +32,17 @@ class Verdict(BaseModel):
     """
 
     correlation_id: str
-    coherence_score: int  # 1-5
-    alignment: Literal["aligned", "partial", "misaligned"]
+    coherence_score: int = Field(ge=1, le=5)
+    alignment: VerdictAlignment
     flags: list[str]
     recommendation: str
     reasoning: str
+
+    model_config = {"frozen": True}
+
+
+class JudgeFailure(BaseModel):
+    correlation_id: str
+    failure_reason: str
 
     model_config = {"frozen": True}

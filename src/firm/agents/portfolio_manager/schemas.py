@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel
 
 from firm.agents.research.schemas import Evidence, Refusal
 from firm.domain import Portfolio
+from firm.domain.enums import TradeSide
 
 
 class PMInput(BaseModel):
@@ -18,14 +19,15 @@ class PMInput(BaseModel):
     portfolio: Portfolio
     decision_ts: datetime
     correlation_id: str
-    technical_signal: Any | None = None  # TechnicalSignal | TechnicalUnavailable | None
+    technical_signal: dict[str, Any] | None = None
+    research_plan: dict[str, Any] | None = None
 
     model_config = {"frozen": True}
 
 
 class TradeProposal(BaseModel):
     symbol: str
-    side: Literal["buy", "sell"]
+    side: TradeSide
     qty: Decimal
     notional: Decimal
     rationale: str

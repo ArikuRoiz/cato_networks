@@ -5,10 +5,12 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
+
+from firm.domain.enums import TradeSide, TriggerType
 
 if TYPE_CHECKING:
     from firm.domain.decisions import PolicyResult
@@ -31,7 +33,7 @@ class Trade(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     cycle_id: UUID
     symbol: str
-    side: Literal["buy", "sell"]
+    side: TradeSide
     qty: Decimal
     status: TradeStatus = TradeStatus.PROPOSED
     requested_price: Decimal
@@ -59,7 +61,7 @@ class DecisionCycle(BaseModel):
     """One end-to-end research → PM → risk → execution cycle."""
 
     id: UUID = Field(default_factory=uuid4)
-    trigger_type: Literal["scheduled", "event"]
+    trigger_type: TriggerType
     trigger_ref: str | None = None
     started_at: datetime
     outcome: str | None = None

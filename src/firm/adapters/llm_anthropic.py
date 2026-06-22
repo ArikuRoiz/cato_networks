@@ -8,13 +8,16 @@ model strings without a mapping entry.
 
 from __future__ import annotations
 
+import logging
 from typing import cast
 
 import anthropic
-from anthropic.types import MessageParam, TextBlock
+from anthropic.types import MessageParam, TextBlock, ToolUseBlock
 
 from firm.ports.llm import LLM
-from firm.ports.types import LLMError, LLMMessage, LLMResponse
+from firm.ports.types import LLMError, LLMMessage, LLMResponse, ToolDef, ToolExecutors
+
+logger = logging.getLogger(__name__)
 
 # Short-name → versioned model-ID routing.
 # "haiku"  → cheap extraction model (~70 % of calls)
@@ -101,13 +104,106 @@ class AnthropicLLM(LLM):
         model: str,
         max_tokens: int,
     ) -> LLMResponse | LLMError:
-        """Send *messages* to the Anthropic API and return the result.
-
-        Returns ``LLMResponse`` on success.
-        Returns ``LLMError`` for API status errors (4xx/5xx), connection
-        failures, and empty/unexpected content — never raises for expected paths.
-        """
         resolved = _resolve_model(model)
+        try:
+            from langfuse.decorators import langfuse_context, observe
+
+            @observe(as_type="generation", name=f"llm.{resolved}")  # type: ignore[untyped-decorator]
+            def _traced() -> LLMResponse | LLMError:
+                langfuse_context.update_current_observation(
+                    model=resolved,
+                    input=[{"role": m.role, "content": m.content} for m in messages],
+                    model_parameters={"max_tokens": max_tokens},
+                )
+                result = self._call_api(messages, resolved=resolved, max_tokens=max_tokens)
+                if isinstance(result, LLMResponse):
+                    langfuse_context.update_current_observation(
+                        output=result.content,
+                        usage={
+                            "input": result.input_tokens,
+                            "output": result.output_tokens,
+                            "unit": "TOKENS",
+                        },
+                    )
+                else:
+                    langfuse_context.update_current_observation(
+                        level="ERROR",
+                        status_message=result.message,
+                    )
+                return result
+
+            return _traced()  # type: ignore[no-any-return]
+        except ImportError as exc:
+            logger.warning("Langfuse tracing unavailable, running without: %s", exc)
+            return self._call_api(messages, resolved=resolved, max_tokens=max_tokens)
+
+    def complete_with_tools(
+        self,
+        messages: list[LLMMessage],
+        tools: list[ToolDef],
+        executors: ToolExecutors,
+        *,
+        model: str,
+        max_tokens: int,
+        max_rounds: int = 5,
+    ) -> LLMResponse | LLMError:
+        resolved = _resolve_model(model)
+        system, api_messages = _to_api_messages(messages)
+        api_tools = [{"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in tools]
+        total_input = total_output = 0
+
+        for _ in range(max_rounds):
+            try:
+                if system:
+                    response = self._client.messages.create(
+                        model=resolved, max_tokens=max_tokens, messages=api_messages, tools=api_tools, system=system  # type: ignore[arg-type]
+                    )
+                else:
+                    response = self._client.messages.create(
+                        model=resolved, max_tokens=max_tokens, messages=api_messages, tools=api_tools  # type: ignore[arg-type]
+                    )
+            except anthropic.APIStatusError as exc:
+                return LLMError(message=str(exc), retryable=exc.status_code in {429, 500, 502, 503})
+            except anthropic.APIConnectionError as exc:
+                return LLMError(message=str(exc), retryable=True)
+
+            total_input += response.usage.input_tokens
+            total_output += response.usage.output_tokens
+
+            if response.stop_reason == "end_turn":
+                for block in response.content:
+                    if isinstance(block, TextBlock):
+                        return LLMResponse(content=block.text, input_tokens=total_input, output_tokens=total_output, model=resolved)
+                return LLMError(message="No text block in final tool-loop response", retryable=False)
+
+            if response.stop_reason != "tool_use":
+                return LLMError(message=f"Unexpected stop_reason: {response.stop_reason}", retryable=False)
+
+            tool_results = []
+            for block in response.content:
+                if isinstance(block, ToolUseBlock):
+                    executor = executors.get(block.name)
+                    if executor is None:
+                        result = f"Error: unknown tool '{block.name}'"
+                    else:
+                        try:
+                            result = executor(dict(block.input))
+                        except Exception:
+                            logger.exception("Tool execution failed: %s(%r)", block.name, block.input)
+                            result = f"Error executing {block.name}"
+                    tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+
+            api_messages = [*api_messages, {"role": "assistant", "content": response.content}, {"role": "user", "content": tool_results}]  # type: ignore[typeddict-item]
+
+        return LLMError(message=f"Tool loop exceeded max_rounds={max_rounds}", retryable=False)
+
+    def _call_api(
+        self,
+        messages: list[LLMMessage],
+        *,
+        resolved: str,
+        max_tokens: int,
+    ) -> LLMResponse | LLMError:
         try:
             system, api_messages = _to_api_messages(messages)
             if system:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from firm.agents.base import BaseAgent
 from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
@@ -17,6 +17,7 @@ from firm.domain import (
     TradeStatus,
 )
 from firm.domain import HITLRequired as DomainHITLRequired
+from firm.utils import str_to_uuid
 
 
 class RiskAgent(BaseAgent[RiskInput, ApprovedTrade | HITLRequired | Rejected]):
@@ -50,7 +51,7 @@ def _build_trade_stub(
     price = prices.get(proposal.symbol, proposal.notional / proposal.qty)
     return Trade(
         id=uuid4(),
-        cycle_id=_str_to_uuid(correlation_id),
+        cycle_id=str_to_uuid(correlation_id),
         symbol=proposal.symbol,
         side=proposal.side,
         qty=proposal.qty,
@@ -58,13 +59,6 @@ def _build_trade_stub(
         requested_price=price,
         idempotency_key=f"risk-check-{correlation_id}-{proposal.symbol}",
     )
-
-
-def _str_to_uuid(value: str) -> UUID:
-    try:
-        return UUID(value)
-    except ValueError:
-        return uuid4()
 
 
 def _evaluate_proposal(

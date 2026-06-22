@@ -12,6 +12,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from firm.domain import Bar
+from firm.domain.enums import ApprovalStatus
 from firm.ports.types import (
     ApprovalResult,
     Chunk,
@@ -21,6 +22,8 @@ from firm.ports.types import (
     LLMMessage,
     LLMResponse,
     NewsDoc,
+    ToolDef,
+    ToolExecutors,
 )
 
 # ---------------------------------------------------------------------------
@@ -137,6 +140,19 @@ class FakeLLM:
         self.index += 1
         return response
 
+    def complete_with_tools(
+        self,
+        messages: list[LLMMessage],
+        tools: list[ToolDef],
+        executors: ToolExecutors,
+        *,
+        model: str,
+        max_tokens: int,
+        max_rounds: int = 5,
+    ) -> LLMResponse | LLMError:
+        """Skip tool execution and return the next queued response directly."""
+        return self.complete(messages, model=model, max_tokens=max_tokens)
+
     def count_tokens(
         self,
         messages: list[LLMMessage],
@@ -172,7 +188,7 @@ class FakeReportSink:
     def send_hitl_request(self, req: HITLRequest) -> ApprovalResult:
         """Capture *req* and return an auto-approved result."""
         self.hitl_requests.append(req)
-        return ApprovalResult(status="approved", decided_by="fake-approver")
+        return ApprovalResult(status=ApprovalStatus.APPROVED, decided_by="fake-approver")
 
     def send_alert(self, message: str, correlation_id: str) -> None:
         """Capture *(message, correlation_id)* for later assertion."""

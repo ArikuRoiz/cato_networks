@@ -1,7 +1,6 @@
 """Concrete implementations of the port interfaces, plus in-memory fakes for testing."""
 
 from firm.adapters.evidence_pgvector import PgvectorEvidenceStore
-from firm.adapters.excel_report import ExcelReportSink
 from firm.adapters.fakes import (
     FakeEvidenceStore,
     FakeLLM,
@@ -12,7 +11,7 @@ from firm.adapters.llm_anthropic import MODEL_MAP, AnthropicLLM
 from firm.adapters.llm_cassette import CassetteLLM, CassetteNotFound
 from firm.adapters.market_data_frozen import FrozenMarketData
 from firm.adapters.market_data_live import LiveMarketData
-from firm.adapters.slack_report import SlackReportSink
+from firm.adapters.report import ExcelReportSink, FileReportSink, SlackReportSink
 
 __all__ = [
     "MODEL_MAP",
@@ -24,6 +23,7 @@ __all__ = [
     "FakeLLM",
     "FakeMarketData",
     "FakeReportSink",
+    "FileReportSink",
     "FrozenMarketData",
     "LiveMarketData",
     "PgvectorEvidenceStore",

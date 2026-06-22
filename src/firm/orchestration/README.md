@@ -1,1 +1,1 @@
-LangGraph pipeline graph with Postgres checkpointer and HITL interrupt/resume at the Risk node.
+LangGraph pipeline: research+technical fan out from START, debate loop (bull→bear×N→research_manager), then pm→risk→execution→reporting→synthesis→judge. NodePorts is the DI container; build_graph() requires it. Postgres checkpointer enables HITL interrupt/resume.

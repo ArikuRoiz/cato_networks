@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from firm.agents.base import BaseAgent
-from firm.agents.judge.schemas import JudgeInput, Verdict
+from firm.agents.judge.schemas import JudgeFailure, JudgeInput, Verdict
 from firm.ports.llm import LLM
 from firm.ports.types import LLMError, LLMMessage
 
@@ -34,16 +34,18 @@ Coherence scoring rubric:
 """
 
 
-class JudgeAgent(BaseAgent[JudgeInput, Verdict]):
+class JudgeAgent(BaseAgent[JudgeInput, Verdict | JudgeFailure]):
     def __init__(self, llm: LLM) -> None:
         self._llm = llm
 
-    def run(self, inp: JudgeInput) -> Verdict:
+    def run(self, inp: JudgeInput) -> Verdict | JudgeFailure:
         messages = _build_messages(inp)
         resp = self._llm.complete(messages, model="sonnet", max_tokens=512)
 
         if isinstance(resp, LLMError):
-            return _fallback_verdict(inp.correlation_id, f"llm_error: {resp.message}")
+            return JudgeFailure(
+                correlation_id=inp.correlation_id, failure_reason=f"llm_error: {resp.message}"
+            )
 
         return _parse_verdict(inp.correlation_id, resp.content)
 
@@ -90,20 +92,31 @@ def _synthesis_line(synthesis: dict | None) -> str:  # type: ignore[type-arg]
     return str(synthesis.get("executive_summary", ""))
 
 
+def _research_plan_line(plan: dict | None) -> str:  # type: ignore[type-arg]
+    if not plan or "failure_reason" in plan:
+        return "Unavailable"
+    rec = plan.get("recommendation", "unknown")
+    conviction = float(plan.get("conviction", 0.0))
+    rationale = plan.get("rationale", "")
+    return f"recommendation={rec}, conviction={conviction:.0%}. {rationale}"
+
+
 def _build_messages(inp: JudgeInput) -> list[LLMMessage]:
     date_str = inp.decision_ts.strftime("%Y-%m-%d")
     user = (
         f"Audit trading decision for {inp.symbol} on {date_str}.\n\n"
         f"Evidence: {_evidence_line(inp.evidence)}\n"
         f"Technical: {_technical_line(inp.technical_signal)}\n"
+        f"Research plan (debate outcome): {_research_plan_line(inp.research_plan)}\n"
         f"PM decision: {_proposal_line(inp.trade_proposal)}\n"
         f"Cycle outcome: {inp.cycle_outcome or 'unknown'}\n"
         f"Synthesis summary: {_synthesis_line(inp.synthesis)}\n\n"
         f"{_RUBRIC}\n"
         f"Evaluate for: (1) evidence-decision alignment, "
         f"(2) TA-fundamental agreement, "
-        f"(3) position sizing appropriateness, "
-        f"(4) any red flags that were ignored.\n\n"
+        f"(3) whether PM decision follows the research plan recommendation, "
+        f"(4) position sizing appropriateness, "
+        f"(5) any red flags that were ignored.\n\n"
         f"Respond ONLY with:\n{_JSON_SCHEMA}"
     )
     return [
@@ -117,11 +130,13 @@ def _build_messages(inp: JudgeInput) -> list[LLMMessage]:
 # ---------------------------------------------------------------------------
 
 
-def _parse_verdict(correlation_id: str, content: str) -> Verdict:
+def _parse_verdict(correlation_id: str, content: str) -> Verdict | JudgeFailure:
     try:
         raw = json.loads(content.strip())
-    except json.JSONDecodeError:
-        return _fallback_verdict(correlation_id, "llm returned invalid JSON")
+    except json.JSONDecodeError as exc:
+        return JudgeFailure(correlation_id=correlation_id, failure_reason=f"invalid JSON: {exc}")
+    if not isinstance(raw, dict):
+        return JudgeFailure(correlation_id=correlation_id, failure_reason="non-object JSON")
 
     score = int(raw.get("coherence_score", 3))
     score = max(1, min(5, score))
@@ -136,15 +151,4 @@ def _parse_verdict(correlation_id: str, content: str) -> Verdict:
         flags=[str(f) for f in raw.get("flags", [])],
         recommendation=str(raw.get("recommendation", "")),
         reasoning=str(raw.get("reasoning", "")),
-    )
-
-
-def _fallback_verdict(correlation_id: str, reason: str) -> Verdict:
-    return Verdict(
-        correlation_id=correlation_id,
-        coherence_score=3,
-        alignment="partial",
-        flags=[f"Judge unavailable: {reason}"],
-        recommendation="Manual review required.",
-        reasoning="Judge agent failed to produce a verdict.",
     )

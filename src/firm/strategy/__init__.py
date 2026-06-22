@@ -14,9 +14,10 @@ from decimal import ROUND_DOWN, Decimal
 
 from firm.config.settings import RiskPolicyConfig
 from firm.domain import Bar, Portfolio
+from firm.strategy.indicators import compute_indicators
 from firm.strategy.momentum import compute_momentum
 from firm.strategy.sentiment import compute_sentiment
-from firm.strategy.signals import compute_sentiment_score
+from firm.strategy.signals import compute_sentiment_score, derive_sentiment, technical_score
 
 
 def floor_qty(
@@ -77,8 +78,11 @@ def _portfolio_nav(portfolio: Portfolio, bar: Bar) -> Decimal:
 
 
 __all__ = [
+    "compute_indicators",
     "compute_momentum",
     "compute_sentiment",
     "compute_sentiment_score",
+    "derive_sentiment",
     "floor_qty",
+    "technical_score",
 ]

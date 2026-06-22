@@ -126,3 +126,46 @@ def _negative_hit_count(text: str) -> int:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+# ---------------------------------------------------------------------------
+# PM signal helpers (moved here from portfolio_manager/agent.py)
+# ---------------------------------------------------------------------------
+
+
+def derive_sentiment(evidence: object, llm: object, research_plan: object = None) -> float:
+    """Return a sentiment score in [-1, 1] from the best available source.
+
+    Priority: ResearchPlan signal_score > LLM sentiment > keyword heuristic.
+    """
+    from firm.agents.research.schemas import Refusal
+    from firm.agents.research_manager.schemas import ResearchPlan
+    from firm.strategy.sentiment import compute_sentiment
+
+    if isinstance(research_plan, ResearchPlan):
+        return research_plan.signal_score
+    if isinstance(evidence, Refusal):
+        return 0.0
+    from firm.agents.research.schemas import Evidence
+
+    if llm is not None:
+        return compute_sentiment(evidence, llm)  # type: ignore[arg-type]
+    if isinstance(evidence, Evidence):
+        return compute_sentiment_score([claim.text for claim in evidence.claims])
+    return 0.0
+
+
+def technical_score(technical: object) -> float:
+    """Map TechnicalSignal bias to a [-0.3, 0.3] additive signal contribution."""
+    from firm.agents.technical.schemas import TechnicalSignal
+    from firm.domain.enums import TechnicalBias
+
+    if not isinstance(technical, TechnicalSignal):
+        return 0.0
+    match technical.bias:
+        case TechnicalBias.BULLISH:
+            return 0.3
+        case TechnicalBias.BEARISH:
+            return -0.3
+        case _:
+            return 0.0

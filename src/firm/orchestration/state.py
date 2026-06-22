@@ -8,7 +8,7 @@ domain entities directly.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Any, TypedDict
 
 
 class GraphState(TypedDict, total=False):
@@ -24,6 +24,10 @@ class GraphState(TypedDict, total=False):
     - ``decision_ts``: ISO-8601 datetime string (UTC), no-lookahead boundary.
     - ``evidence``: serialised evidence dict from ResearchAgent.
     - ``technical_signal``: serialised TechnicalSignal or TechnicalUnavailable dict.
+    - ``bull_history``: list of bull researcher argument strings (one per debate round).
+    - ``bear_history``: list of bear researcher argument strings (one per debate round).
+    - ``debate_rounds``: number of completed bull+bear rounds.
+    - ``research_plan``: serialised ResearchPlan from ResearchManagerAgent.
     - ``trade_proposal``: serialised proposal from PMAgent.
     - ``approved_trade``: copy of ``trade_proposal`` after risk gate passes.
     - ``hitl_status``: lifecycle of the human decision.
@@ -35,16 +39,20 @@ class GraphState(TypedDict, total=False):
     """
 
     correlation_id: str
-    trigger_type: str  # "scheduled" | "event"
+    trigger_type: str  # TriggerType: "scheduled" | "event"
     symbol: str
     decision_ts: str  # ISO datetime string
-    evidence: dict | None  # type: ignore[type-arg]
-    technical_signal: dict | None  # type: ignore[type-arg]
-    trade_proposal: dict | None  # type: ignore[type-arg]
-    approved_trade: dict | None  # type: ignore[type-arg]
-    hitl_status: str | None  # "pending" | "approved" | "rejected" | "expired"
-    cycle_outcome: str | None  # "filled" | "rejected" | "rejected_timeout" | "hold" | "error"
-    synthesis: dict | None  # type: ignore[type-arg]
-    verdict: dict | None  # type: ignore[type-arg]
+    evidence: dict[str, Any] | None
+    technical_signal: dict[str, Any] | None
+    bull_history: list[str]
+    bear_history: list[str]
+    debate_rounds: int
+    research_plan: dict[str, Any] | None
+    trade_proposal: dict[str, Any] | None
+    approved_trade: dict[str, Any] | None
+    hitl_status: str | None  # HITLStatus: "pending" | "approved" | "rejected" | "expired"
+    cycle_outcome: str | None  # CycleOutcome: "filled" | "rejected" | "rejected_timeout" | "hold" | "error"
+    synthesis: dict[str, Any] | None
+    verdict: dict[str, Any] | None
     error: str | None
     token_count: int
