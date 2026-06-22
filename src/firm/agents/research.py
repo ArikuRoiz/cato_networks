@@ -62,6 +62,8 @@ class Refusal(BaseModel):
         "insufficient_evidence",
         "store_unavailable",
         "injection_detected",
+        "llm_error_retryable",
+        "llm_error_non_retryable",
     ]
 
     model_config = {"frozen": True}
@@ -112,8 +114,9 @@ class ResearchAgent:
         messages = _build_messages(inp.symbol, safe_chunks)
         resp = self._llm.complete(messages, model="haiku", max_tokens=1024)
         if isinstance(resp, LLMError):
-            reason = "llm_error_non_retryable" if not resp.retryable else "llm_error_retryable"
-            return Refusal(reason=reason)
+            if resp.retryable:
+                return Refusal(reason="llm_error_retryable")
+            return Refusal(reason="llm_error_non_retryable")
 
         claims = _parse_claims(resp.content, safe_chunks)
         return Evidence(

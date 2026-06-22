@@ -110,14 +110,19 @@ class AnthropicLLM(LLM):
         resolved = _resolve_model(model)
         try:
             system, api_messages = _to_api_messages(messages)
-            kwargs: dict[str, object] = dict(
-                model=resolved,
-                max_tokens=max_tokens,
-                messages=api_messages,
-            )
             if system:
-                kwargs["system"] = system
-            response = self._client.messages.create(**kwargs)  # type: ignore[arg-type]
+                response = self._client.messages.create(
+                    model=resolved,
+                    max_tokens=max_tokens,
+                    messages=api_messages,
+                    system=system,
+                )
+            else:
+                response = self._client.messages.create(
+                    model=resolved,
+                    max_tokens=max_tokens,
+                    messages=api_messages,
+                )
             return _parse_response(response, resolved)
         except anthropic.APIStatusError as exc:
             retryable = exc.status_code in {429, 500, 502, 503}
@@ -141,10 +146,17 @@ class AnthropicLLM(LLM):
         resolved = _resolve_model(model)
         try:
             system, api_messages = _to_api_messages(messages)
-            ct_kwargs: dict[str, object] = dict(model=resolved, messages=api_messages)
             if system:
-                ct_kwargs["system"] = system
-            response = self._client.messages.count_tokens(**ct_kwargs)  # type: ignore[arg-type]
+                response = self._client.messages.count_tokens(
+                    model=resolved,
+                    messages=api_messages,
+                    system=system,
+                )
+            else:
+                response = self._client.messages.count_tokens(
+                    model=resolved,
+                    messages=api_messages,
+                )
             return response.input_tokens
         except anthropic.APIStatusError as exc:
             raise RuntimeError(
