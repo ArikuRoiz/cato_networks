@@ -78,10 +78,10 @@ def _proposal_line(proposal: dict | None) -> str:  # type: ignore[type-arg]
         return "No proposal"
     if "qty" in proposal:
         return (
-            f"{proposal.get('side','?').upper()} {proposal.get('qty','?')} shares "
-            f"(${proposal.get('notional','?')}). {proposal.get('rationale','')}"
+            f"{proposal.get('side', '?').upper()} {proposal.get('qty', '?')} shares "
+            f"(${proposal.get('notional', '?')}). {proposal.get('rationale', '')}"
         )
-    return f"Hold — {proposal.get('reason','')}"
+    return f"Hold — {proposal.get('reason', '')}"
 
 
 def _synthesis_line(synthesis: dict | None) -> str:  # type: ignore[type-arg]

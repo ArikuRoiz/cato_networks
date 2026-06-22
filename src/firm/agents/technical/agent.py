@@ -112,7 +112,7 @@ def _bollinger(closes: list[float], period: int = 20) -> tuple[float, float, flo
     window = closes[-period:] if len(closes) >= period else closes
     mid = sum(window) / len(window)
     variance = sum((x - mid) ** 2 for x in window) / len(window)
-    std = variance ** 0.5
+    std = variance**0.5
     return mid + 2 * std, mid, mid - 2 * std
 
 
@@ -172,7 +172,9 @@ def _parse_signal(
         symbol=symbol,
         headline=str(raw.get("headline", "Technical analysis unavailable"))[:120],
         body=str(raw.get("body", "")),
-        bias=raw.get("bias", "neutral") if raw.get("bias") in ("bullish", "bearish", "neutral") else "neutral",
+        bias=raw.get("bias", "neutral")
+        if raw.get("bias") in ("bullish", "bearish", "neutral")
+        else "neutral",
         rsi=round(ind["rsi"], 2),
         macd=round(ind["macd"], 4),
         macd_cross=macd_cross,  # type: ignore[arg-type]

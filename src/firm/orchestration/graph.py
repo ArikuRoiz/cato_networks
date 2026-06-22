@@ -113,6 +113,7 @@ def build_graph(
 # Stub nodes (used when NodePorts not provided — replaced at runtime)
 # ---------------------------------------------------------------------------
 
+
 def technical_node(state: GraphState) -> dict:  # type: ignore[type-arg]
     return {"technical_signal": {"symbol": state.get("symbol", ""), "reason": "stub"}}
 
@@ -122,4 +123,12 @@ def synthesis_node(state: GraphState) -> dict:  # type: ignore[type-arg]
 
 
 def judge_node(state: GraphState) -> dict:  # type: ignore[type-arg]
-    return {"verdict": {"coherence_score": 3, "alignment": "partial", "flags": [], "recommendation": "stub", "reasoning": "stub"}}
+    return {
+        "verdict": {
+            "coherence_score": 3,
+            "alignment": "partial",
+            "flags": [],
+            "recommendation": "stub",
+            "reasoning": "stub",
+        }
+    }

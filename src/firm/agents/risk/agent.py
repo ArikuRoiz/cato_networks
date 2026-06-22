@@ -81,7 +81,5 @@ def _evaluate_proposal(
     if isinstance(result, Approved):
         return ApprovedTrade(trade=trade_stub, correlation_id=correlation_id)
     if isinstance(result, DomainHITLRequired):
-        return HITLRequired(
-            proposal=proposal, reason=result.reason, correlation_id=correlation_id
-        )
+        return HITLRequired(proposal=proposal, reason=result.reason, correlation_id=correlation_id)
     return Rejected(reason=result.reason, correlation_id=correlation_id)

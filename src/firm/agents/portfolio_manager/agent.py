@@ -78,7 +78,9 @@ def _technical_score(technical: object) -> float:
     return {"bullish": 0.3, "bearish": -0.3, "neutral": 0.0}.get(technical.bias, 0.0)
 
 
-def _combine_signal(momentum: float, sentiment: float, risk: RiskPolicyConfig, technical: object = None) -> float:
+def _combine_signal(
+    momentum: float, sentiment: float, risk: RiskPolicyConfig, technical: object = None
+) -> float:
     base = risk.momentum_weight * momentum + risk.sentiment_weight * sentiment
     return base + _technical_score(technical)
 

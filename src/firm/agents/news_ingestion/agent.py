@@ -41,11 +41,15 @@ class NewsIngestionAgent(BaseAgent[NewsIngestionInput, NewsIngested | NewsIngest
         return NewsIngested(articles_added=added, symbols_updated=updated)
 
 
-def _ingest_symbol(evidence: EvidenceStore, symbol: str, cutoff: datetime) -> int | NewsIngestionFailure:
+def _ingest_symbol(
+    evidence: EvidenceStore, symbol: str, cutoff: datetime
+) -> int | NewsIngestionFailure:
     try:
         import yfinance as yf  # local import — optional dependency
     except ImportError:
-        return NewsIngestionFailure(reason="yfinance not installed; run: pip install yfinance", symbol=symbol)
+        return NewsIngestionFailure(
+            reason="yfinance not installed; run: pip install yfinance", symbol=symbol
+        )
 
     try:
         ticker = yf.Ticker(symbol)

@@ -33,7 +33,9 @@ class ExecutionAgent(BaseAgent[ExecutionInput, Fill | ExecutionFailure]):
         filled_trade = _apply_fill_costs(trade, fill_price, commission)
 
         try:
-            return _write_trade(self._ledger, filled_trade, inp.portfolio_id, fill_price, commission)
+            return _write_trade(
+                self._ledger, filled_trade, inp.portfolio_id, fill_price, commission
+            )
         except Exception as exc:
             return ExecutionFailure(reason=str(exc), retryable=True)
 
