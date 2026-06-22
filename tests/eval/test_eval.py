@@ -18,7 +18,7 @@ import pytest
 from eval.metrics import compute_metrics
 from eval.replay import CycleRecord, EvalConfig, EvalResult, run_eval
 from eval.report import generate_report
-from firm.domain.entities import Bar
+from firm.domain import Bar
 
 # ---------------------------------------------------------------------------
 # Helpers / shared fixtures

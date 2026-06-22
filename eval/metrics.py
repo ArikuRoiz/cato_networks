@@ -31,13 +31,13 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from pydantic import BaseModel
 
 from eval.replay import CycleRecord, EvalResult
-from firm.domain.entities import Bar
-
+from firm.domain import Bar
 
 # ---------------------------------------------------------------------------
 # Output schema

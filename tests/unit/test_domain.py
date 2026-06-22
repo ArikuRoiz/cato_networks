@@ -13,7 +13,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from firm.domain.entities import (
+from firm.domain import (
     Approved,
     Bar,
     HITLRequired,

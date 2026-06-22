@@ -15,7 +15,7 @@ import pytest
 from firm.adapters.fakes import FakeLLM
 from firm.agents.research import Claim, Evidence
 from firm.config.settings import RiskPolicyConfig
-from firm.domain.entities import Bar, Portfolio
+from firm.domain import Bar, Portfolio
 from firm.ports.types import LLMError, LLMMessage, LLMResponse
 from firm.strategy import floor_qty
 from firm.strategy.momentum import compute_momentum

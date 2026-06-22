@@ -15,7 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from firm.domain.entities import Portfolio, Trade
+from firm.domain import Portfolio, Trade
 from firm.persistence.ledger import LedgerRepository
 from firm.ports.report import ReportSink
 from firm.ports.types import DailyReport, PositionRecord, TradeRecord

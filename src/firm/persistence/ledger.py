@@ -23,9 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, selectinload
 
-from firm.domain.entities import (
-    _COMMISSION_PER_SHARE,
-    _SLIPPAGE_BPS,
+from firm.domain import (
     DecisionCycle,
     Holding,
     InsufficientCash,
@@ -35,6 +33,7 @@ from firm.domain.entities import (
     Trade,
     TradeStatus,
 )
+from firm.domain.portfolio import _COMMISSION_PER_SHARE, _SLIPPAGE_BPS
 from firm.persistence.models import (
     AuditLogRow,
     DecisionCycleRow,

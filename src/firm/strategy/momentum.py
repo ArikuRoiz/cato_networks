@@ -5,7 +5,7 @@ N-day price-return momentum over a window of ``Bar`` objects.
 
 from __future__ import annotations
 
-from firm.domain.entities import Bar
+from firm.domain import Bar
 
 
 def compute_momentum(bars: list[Bar], n_days: int = 5) -> float:

@@ -16,14 +16,14 @@ from pydantic import BaseModel
 
 from firm.agents.portfolio_manager import Hold, TradeProposal
 from firm.config.settings import RiskPolicyConfig
-from firm.domain.entities import (
+from firm.domain import (
     Approved,
     Portfolio,
     RiskPolicy,
     Trade,
     TradeStatus,
 )
-from firm.domain.entities import (
+from firm.domain import (
     HITLRequired as DomainHITLRequired,
 )
 

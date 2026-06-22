@@ -27,7 +27,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
-from firm.domain.entities import Trade, TradeStatus
+from firm.domain import Trade, TradeStatus
 from firm.persistence.ledger import LedgerRepository
 
 # ---------------------------------------------------------------------------

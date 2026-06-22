@@ -186,7 +186,7 @@ def _build_domain_objects(
     from decimal import Decimal
 
     from eval.replay import _FakeLedger
-    from firm.domain.entities import Portfolio, RiskPolicy
+    from firm.domain import Portfolio, RiskPolicy
     from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 
     portfolio_id = uuid.uuid4()

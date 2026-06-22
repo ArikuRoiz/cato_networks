@@ -20,7 +20,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from firm.domain.entities import Bar
+from firm.domain import Bar
 
 
 def _parse_bar(symbol: str, row: dict[str, str]) -> Bar:

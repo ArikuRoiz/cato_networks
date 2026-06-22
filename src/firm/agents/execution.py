@@ -16,7 +16,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from firm.agents.risk import ApprovedTrade
-from firm.domain.entities import Portfolio, Trade
+from firm.domain import Portfolio, Trade
 from firm.domain.guardrails import LedgerGuardrail, LimitExceeded
 from firm.persistence.ledger import LedgerRepository
 

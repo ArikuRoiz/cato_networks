@@ -1,21 +1,7 @@
-"""Pure domain entities: Portfolio, Holding, Lot, Trade, RiskPolicy, Bar — no IO imports."""
+"""Domain layer: Portfolio, Trade, RiskPolicy, and guardrails — no IO imports."""
 
-from firm.domain.entities import (
-    Approved,
-    Bar,
-    DecisionCycle,
-    HITLRequired,
-    Holding,
-    InsufficientCash,
-    InsufficientHolding,
-    Lot,
-    PolicyResult,
-    Portfolio,
-    Rejected,
-    RiskPolicy,
-    Trade,
-    TradeStatus,
-)
+from firm.domain.decisions import Approved, HITLRequired, PolicyResult, Rejected
+from firm.domain.exceptions import InsufficientCash, InsufficientHolding
 from firm.domain.guardrails import (
     InjectionDetected,
     InjectionGuard,
@@ -26,6 +12,10 @@ from firm.domain.guardrails import (
     TokenBudgetExceeded,
     ValidationFailure,
 )
+from firm.domain.market import Bar
+from firm.domain.portfolio import Holding, Lot, Portfolio
+from firm.domain.risk import RiskPolicy
+from firm.domain.trade import DecisionCycle, Trade, TradeStatus
 
 __all__ = [
     "Approved",

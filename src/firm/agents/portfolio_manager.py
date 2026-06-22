@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from firm.agents.research import Evidence, Refusal
 from firm.config.settings import RiskPolicyConfig
-from firm.domain.entities import Bar, Portfolio
+from firm.domain import Bar, Portfolio
 from firm.ports.llm import LLM
 from firm.ports.market_data import MarketDataSource
 from firm.strategy import compute_momentum, compute_sentiment, floor_qty

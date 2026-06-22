@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from firm.domain.entities import Bar
+from firm.domain import Bar
 
 
 @runtime_checkable

@@ -46,7 +46,7 @@ from firm.agents.reporting import ReportingAgent, ReportingInput
 from firm.agents.research import Evidence, Refusal, ResearchAgent, ResearchInput
 from firm.agents.risk import ApprovedTrade, HITLRequired, Rejected, RiskAgent, RiskInput
 from firm.config.settings import RiskPolicyConfig, load_risk_policy
-from firm.domain.entities import Portfolio, RiskPolicy, Trade, TradeStatus
+from firm.domain import Portfolio, RiskPolicy, Trade, TradeStatus
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.ports.llm import LLM
 from firm.ports.types import LLMResponse, NewsDoc
@@ -172,7 +172,7 @@ def _apply_buy(
     opened_at: datetime | None = None,
 ) -> None:
     """Update in-memory portfolio after a buy — no FIFO lot tracking."""
-    from firm.domain.entities import Holding, Lot
+    from firm.domain import Holding, Lot
 
     fill_price = trade.fill_price or trade.requested_price
     ts = opened_at if opened_at is not None else datetime.now(tz=UTC)
@@ -449,7 +449,7 @@ def _run_cycle(
 
     try:
         final_state: dict = graph.invoke(initial_state, config=config)  # type: ignore[type-arg]
-    except Exception:  # noqa: BLE001 — never let a cycle crash the harness
+    except Exception:
         return _make_record(
             cycle_id=correlation_id,
             symbol=symbol,
@@ -831,7 +831,7 @@ def _try_load_risk_policy(project_root: Path) -> RiskPolicyConfig:
     if policy_path.exists():
         try:
             return load_risk_policy(policy_path)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     return _default_risk_policy()
 

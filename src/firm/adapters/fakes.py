@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import uuid4
 
-from firm.domain.entities import Bar
+from firm.domain import Bar
 from firm.ports.types import (
     ApprovalResult,
     Chunk,

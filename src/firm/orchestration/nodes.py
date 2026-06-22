@@ -37,7 +37,7 @@ from firm.agents.research import ResearchAgent, ResearchInput
 from firm.agents.risk import ApprovedTrade, RiskAgent, RiskInput
 from firm.agents.risk import HITLRequired as AgentHITLRequired
 from firm.config.settings import RiskPolicyConfig
-from firm.domain.entities import Portfolio
+from firm.domain import Portfolio
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.orchestration.state import GraphState
 from firm.persistence.ledger import LedgerRepository
@@ -447,7 +447,7 @@ def _extract_prices(proposal: object, portfolio: object) -> dict[str, Decimal]:
     as a fallback for existing holdings when no live prices are available.
     """
     from firm.agents.portfolio_manager import TradeProposal
-    from firm.domain.entities import Portfolio as PortfolioModel
+    from firm.domain import Portfolio as PortfolioModel
 
     prices: dict[str, Decimal] = {}
     if isinstance(proposal, TradeProposal) and proposal.qty > Decimal("0"):

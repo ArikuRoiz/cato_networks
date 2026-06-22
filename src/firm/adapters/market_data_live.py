@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from firm.domain.entities import Bar
+from firm.domain import Bar
 
 _NOT_IMPLEMENTED_MSG = "Live market feed not implemented — wire to real data source"
 

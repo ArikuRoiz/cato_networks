@@ -13,7 +13,7 @@ from __future__ import annotations
 from decimal import ROUND_DOWN, Decimal
 
 from firm.config.settings import RiskPolicyConfig
-from firm.domain.entities import Bar, Portfolio
+from firm.domain import Bar, Portfolio
 from firm.strategy.momentum import compute_momentum
 from firm.strategy.sentiment import compute_sentiment
 from firm.strategy.signals import compute_sentiment_score

@@ -19,7 +19,7 @@ from firm.agents.reporting import ReportFailure, ReportingAgent, ReportingInput,
 from firm.agents.research import Claim, Evidence, Refusal, ResearchAgent, ResearchInput
 from firm.agents.risk import ApprovedTrade, HITLRequired, Rejected, RiskAgent, RiskInput
 from firm.config.settings import RiskPolicyConfig
-from firm.domain.entities import Bar, Portfolio, RiskPolicy, Trade, TradeStatus
+from firm.domain import Bar, Portfolio, RiskPolicy, Trade, TradeStatus
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.ports.types import Chunk, LLMMessage, LLMResponse
 

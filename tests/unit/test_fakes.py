@@ -22,7 +22,7 @@ from firm.adapters.fakes import (
     FakeMarketData,
     FakeReportSink,
 )
-from firm.domain.entities import Bar
+from firm.domain import Bar
 from firm.ports.evidence import EvidenceStore
 from firm.ports.llm import LLM
 from firm.ports.market_data import MarketDataSource

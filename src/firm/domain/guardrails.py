@@ -12,14 +12,10 @@ from typing import Any, ClassVar, NamedTuple, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from firm.domain.entities import (
-    Approved,
-    HITLRequired,
-    Portfolio,
-    Rejected,
-    RiskPolicy,
-    Trade,
-)
+from firm.domain.decisions import Approved, HITLRequired, Rejected
+from firm.domain.portfolio import Portfolio
+from firm.domain.risk import RiskPolicy
+from firm.domain.trade import Trade
 
 # ---------------------------------------------------------------------------
 # Domain exceptions

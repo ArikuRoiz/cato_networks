@@ -12,7 +12,6 @@ from __future__ import annotations
 from eval.metrics import EvalMetrics
 from eval.replay import CycleRecord, EvalResult
 
-
 # ---------------------------------------------------------------------------
 # Public function
 # ---------------------------------------------------------------------------
@@ -49,8 +48,8 @@ def _return_summary(metrics: EvalMetrics) -> str:
     Plainly states underperformance when alpha < 0 — never softened.
     """
     lines = ["## Return Summary", ""]
-    lines.append(f"| Metric | Value |")
-    lines.append(f"|--------|-------|")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
     lines.append(f"| Total Return | {metrics.total_return:+.2%} |")
     lines.append(f"| Benchmark Return (SPY) | {metrics.benchmark_return:+.2%} |")
     lines.append(f"| Alpha | {metrics.alpha:+.2%} |")
@@ -176,7 +175,7 @@ def _limitations() -> str:
         "pending a human decision.",
         "",
         "- **Short replay window.** The replay covers only 5 trading days "
-        "(Oct 21–25 2024), which is insufficient for statistically meaningful "
+        "(Oct 21-25 2024), which is insufficient for statistically meaningful "
         "Sharpe or alpha estimates.  Results should be interpreted as a "
         "functional smoke-test of the pipeline, not an investment performance "
         "assessment.",
