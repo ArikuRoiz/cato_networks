@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: firm
+      POSTGRES_USER: firm
+      POSTGRES_PASSWORD: firm
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U firm -d firm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  langfuse:
+    image: ghcr.io/langfuse/langfuse:latest
+    environment:
+      DATABASE_URL: postgresql://firm:firm@postgres:5432/firm
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-dev-secret-not-for-production}
+      SALT: ${SALT:-dev-salt-not-for-production}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  firm-app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://firm:firm@postgres:5432/firm
+      LANGFUSE_HOST: http://langfuse:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      langfuse:
+        condition: service_started
+    volumes:
+      - ./data:/app/data:ro
+      - ./config:/app/config:ro
+
+volumes:
+  postgres_data:

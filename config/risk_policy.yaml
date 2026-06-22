@@ -1,0 +1,18 @@
+# RiskPolicy — single source of truth for all limit enforcement.
+# Both the Risk agent node and LedgerRepository.execute() read this file.
+# Changes require a review of test_limit_cannot_be_exceeded.
+
+max_trade_notional_pct: 0.10        # per-trade ≤10% NAV
+max_name_concentration_pct: 0.25   # single-name ≤25% NAV
+daily_loss_halt_pct: 0.03          # halt at -3% daily loss
+hitl_threshold_pct: 0.05           # HITL above 5% NAV notional
+buy_threshold: 0.15                 # combined signal threshold
+sell_threshold: -0.10
+momentum_weight: 0.60
+sentiment_weight: 0.40
+momentum_lookback_days: 5
+max_events_per_symbol_per_hour: 3
+event_relevance_threshold: 0.70
+slippage_bps: 5
+commission_per_share: 0.005
+token_budget_per_cycle: 50000

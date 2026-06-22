@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.pyc
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.pyd
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets — never commit these
+.env
+*.pem
+*.key
+*.crt
+*.p12
+
+# Generated reports and large outputs
+data/reports/*.xlsx
+data/reports/*.pdf
+eval/output/
+
+# Coverage and test artifacts
+coverage.xml
+.coverage
+htmlcov/
+
+# Linting and type-checking caches
+.mypy_cache/
+.ruff_cache/
+
+# Pytest
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Prep notes and internal documents — must not be committed
+INTERVIEW_PREP.md
+HLD.md
+prep_notes/
+
+# PDF attachments (brief PDF committed separately if needed; generated PDFs excluded)
+*.pdf
+
+# Terraform state and sensitive plan files
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/*.tfplan
+infra/.terraform.lock.hcl

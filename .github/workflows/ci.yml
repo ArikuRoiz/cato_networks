@@ -1,0 +1,55 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    name: Lint, Test, Eval
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: firm
+          POSTGRES_USER: firm
+          POSTGRES_PASSWORD: firm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://firm:firm@localhost:5432/firm
+      CASSETTE_MODE: replay
+      # No real API keys in CI — cassette adapter and fake adapters are used.
+      ANTHROPIC_API_KEY: ""
+      SLACK_BOT_TOKEN: ""
+      LANGFUSE_PUBLIC_KEY: ""
+      LANGFUSE_SECRET_KEY: ""
+      OTEL_EXPORTER_OTLP_ENDPOINT: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv==0.6.14
+
+      - name: Install dependencies (including dev extras)
+        run: uv sync --extra dev
+
+      - name: Lint — ruff check + ruff format --check + mypy --strict
+        run: uv run make lint
+
+      - name: Unit and integration tests
+        run: uv run make test
+
+      - name: Eval — offline cassette replay
+        run: uv run make eval

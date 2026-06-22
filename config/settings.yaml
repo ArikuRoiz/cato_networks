@@ -1,0 +1,29 @@
+# Application settings — overridable via environment variables.
+# See src/firm/config/ for the Pydantic settings model.
+
+database_url: "postgresql://firm:firm@localhost:5432/firm"
+langfuse_host: "http://localhost:3000"
+langfuse_public_key: ""
+langfuse_secret_key: ""
+anthropic_api_key: ""
+
+# Watchlist of symbols under management
+watchlist:
+  - AAPL
+  - MSFT
+  - NVDA
+  - GOOGL
+  - META
+  - AMD
+benchmark: SPY
+
+# LLM routing
+decision_model: "claude-sonnet-4-5"
+extraction_model: "claude-haiku-4-5"
+max_tokens_per_cycle: 50000
+
+# Scheduled trigger times (NYSE Eastern, 24-h)
+scheduled_triggers:
+  - "09:31"   # market open +1 min
+  - "12:00"   # midday
+  - "15:45"   # 15 min before close
