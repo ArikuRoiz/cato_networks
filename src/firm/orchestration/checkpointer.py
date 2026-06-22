@@ -81,7 +81,7 @@ def open_connection(
             graph = build_graph(saver)
     """
     libpq_url = _normalise_database_url(database_url)
-    conn: psycopg.Connection[psycopg.rows.DictRow] = psycopg.connect(
+    conn: psycopg.Connection[psycopg.rows.DictRow] = psycopg.connect(  # pyright: ignore[reportArgumentType]
         libpq_url,
         autocommit=True,
         prepare_threshold=0,

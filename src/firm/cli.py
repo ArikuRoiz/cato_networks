@@ -493,7 +493,7 @@ def _fetch_audit_rows(url: str, trade_id: str) -> list[Any]:
     import psycopg
     import psycopg.rows
 
-    with psycopg.connect(url, row_factory=psycopg.rows.dict_row) as conn:
+    with psycopg.connect(url, row_factory=psycopg.rows.dict_row) as conn:  # pyright: ignore[reportArgumentType]
         return conn.execute(
             """
             SELECT
