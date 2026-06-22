@@ -63,12 +63,27 @@ def migrated_engine(pg_container: PostgresContainer) -> Engine:
 
 
 def _run_migrations(engine: Engine, url: str) -> None:
-    """Run Alembic migrations against *engine* using DATABASE_URL override."""
+    """Run Alembic migrations against *engine* using DATABASE_URL override.
+
+    Sets DATABASE_URL in the environment so migrations/env.py picks it up
+    (it reads DATABASE_URL first, which would otherwise override the URL we
+    set via set_main_option when running in CI where DATABASE_URL is set).
+    """
+    import os
+
     ini_path = _PROJECT_ROOT / "migrations" / "alembic.ini"
     cfg = AlembicConfig(str(ini_path))
     cfg.set_main_option("script_location", str(_PROJECT_ROOT / "migrations"))
     cfg.set_main_option("sqlalchemy.url", url)
-    alembic_command.upgrade(cfg, "head")
+    old_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = url
+    try:
+        alembic_command.upgrade(cfg, "head")
+    finally:
+        if old_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = old_url
 
 
 # ---------------------------------------------------------------------------

@@ -162,7 +162,7 @@ class TestResearchAgent:
         assert result.claims[0].text == "NVDA beat estimates"
 
     def test_returns_refusal_on_llm_error(self) -> None:
-        """LLM failure → Refusal(reason='store_unavailable')."""
+        """LLM failure → Refusal with an llm_error reason code."""
         from firm.ports.types import LLMError
 
         store = FakeEvidenceStore()
@@ -188,7 +188,7 @@ class TestResearchAgent:
         )
         result = agent.run(inp)
         assert isinstance(result, Refusal)
-        assert result.reason == "store_unavailable"
+        assert result.reason == "llm_error_retryable"
 
     def test_no_lookahead(self) -> None:
         """Chunks published after decision_ts must not be returned."""
