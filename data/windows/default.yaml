@@ -1,0 +1,9 @@
+# Replay window — NVDA earnings week Oct 21-25 2024.
+# Strong news catalyst exercises the event-driven decision path end-to-end.
+
+name: nvda_earnings_oct_2024
+start_date: "2024-10-21"
+end_date: "2024-10-25"
+benchmark: SPY
+watchlist: [AAPL, MSFT, NVDA, GOOGL, META, AMD]
+description: NVDA earnings week Oct 2024 — strong news catalyst for event path

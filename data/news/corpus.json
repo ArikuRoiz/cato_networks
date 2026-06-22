@@ -1,0 +1,350 @@
+[
+  {
+    "symbol": "NVDA",
+    "text": "NVIDIA Corporation reported record quarterly revenue of $35.1 billion for its fiscal Q3 2025, surpassing analyst expectations by a wide margin. Data center revenue rose 112% year-over-year, driven by Hopper architecture GPU demand from hyperscalers and AI training workloads. Gross margins expanded to 74.6%, reflecting the premium pricing environment for H100 and H200 GPU systems.",
+    "source_url": "https://example.com/nvda-q3-2025-earnings-beat",
+    "published_at": "2024-10-22T21:00:00Z"
+  },
+  {
+    "symbol": "NVDA",
+    "text": "Several major investment banks raised their price targets for NVIDIA ahead of the expected earnings release. Analysts at Morgan Stanley, Goldman Sachs, and JP Morgan cited strong data center backlog and continued AI infrastructure spending as primary drivers of their bullish outlook. Consensus estimates for fiscal Q3 revenue were revised upward for the third consecutive time.",
+    "source_url": "https://example.com/nvda-price-target-raises",
+    "published_at": "2024-10-21T14:30:00Z"
+  },
+  {
+    "symbol": "NVDA",
+    "text": "Supply chain checks indicate that TSMC has successfully ramped production of NVIDIA's H100 and H200 GPU packages, alleviating the acute supply shortage that had constrained revenue growth in prior quarters. Lead times for H100 SXM5 configurations declined from 52 weeks to approximately 26 weeks, improving customers' ability to plan infrastructure deployments.",
+    "source_url": "https://example.com/nvda-supply-constraints-ease",
+    "published_at": "2024-10-21T11:00:00Z"
+  },
+  {
+    "symbol": "NVDA",
+    "text": "Implied volatility on NVIDIA options spiked to 65% ahead of the company's expected earnings disclosure, reflecting heightened uncertainty among traders. Options flow showed a skew toward call-side activity, suggesting institutional positioning for an upside surprise. The implied move for the earnings day was priced at approximately plus or minus 9%.",
+    "source_url": "https://example.com/nvda-options-volatility",
+    "published_at": "2024-10-21T10:00:00Z"
+  },
+  {
+    "symbol": "NVDA",
+    "text": "Infrastructure spending from hyperscale cloud providers showed no signs of abatement, with Microsoft, Google, and Amazon collectively committing over $150 billion in capital expenditures for fiscal 2025, the majority directed toward AI compute buildout. Channel checks confirm that essentially all incremental GPU capacity additions continue to use NVIDIA's CUDA ecosystem.",
+    "source_url": "https://example.com/datacenter-capex-boom-2025",
+    "published_at": "2024-10-21T13:00:00Z"
+  },
+  {
+    "symbol": "NVDA",
+    "text": "Short interest in NVIDIA shares declined to its lowest level in three years, according to exchange data, as bearish investors covered positions ahead of the company's anticipated earnings report. Analysts noted that consensus estimates had already been raised multiple times, raising the bar for a beat.",
+    "source_url": "https://example.com/nvda-short-interest-falls",
+    "published_at": "2024-10-22T08:30:00Z"
+  },
+  {
+    "symbol": "NVDA",
+    "text": "NVIDIA confirmed that its next-generation Blackwell GPU architecture remains on track for volume production in Q4 2024, with initial shipments to hyperscale customers already underway. Demand is expected to outstrip supply through 2025. The Blackwell B200 delivers up to 30x faster inference performance for large language models compared to its H100 predecessor.",
+    "source_url": "https://example.com/nvda-blackwell-production-ramp",
+    "published_at": "2024-10-22T15:00:00Z"
+  },
+  {
+    "symbol": "NVDA",
+    "text": "NVIDIA CEO Jensen Huang outlined a two-year product cadence at the Supercomputing 2024 conference, confirming the Rubin architecture successor to Blackwell would arrive in 2026. Huang emphasized continued investment in the CUDA software ecosystem. Critics noted that the relentless roadmap pace increases execution risk but the company has a strong track record of delivery.",
+    "source_url": "https://example.com/nvda-sc24-roadmap-preview",
+    "published_at": "2024-10-24T09:00:00Z"
+  },
+  {
+    "symbol": "NVDA",
+    "text": "NVIDIA stock extended its post-earnings move higher as analysts published upgrade notes, citing better-than-expected gross margin guidance and accelerating data center bookings. The stock approached its all-time high intraday. However, some analysts flagged that high concentration of revenue among five hyperscale customers represents a meaningful risk to future quarters.",
+    "source_url": "https://example.com/nvda-post-earnings-rally",
+    "published_at": "2024-10-23T14:00:00Z"
+  },
+  {
+    "symbol": "NVDA",
+    "text": "NVIDIA's NIM microservices platform, which allows enterprises to deploy AI models on NVIDIA-certified infrastructure, saw a fourfold increase in deployment counts during Q3 2024. The software layer is increasing NVIDIA's recurring software revenue and deepening customer lock-in. Analysts raised their software revenue estimates for NVIDIA by an average of 40% on the news.",
+    "source_url": "https://example.com/nvda-nim-microservices-growth",
+    "published_at": "2024-10-25T10:00:00Z"
+  },
+  {
+    "symbol": "NVDA",
+    "text": "Sovereign AI buildouts in Europe and the Middle East are expanding NVIDIA's addressable market beyond US hyperscalers. France, Germany, and Saudi Arabia have announced national AI infrastructure programs using NVIDIA GPU clusters. Analysts estimate sovereign AI spending could add $5 billion to $8 billion in incremental NVIDIA revenue over the next two years.",
+    "source_url": "https://example.com/nvda-sovereign-ai-expansion",
+    "published_at": "2024-10-25T11:00:00Z"
+  },
+  {
+    "symbol": "NVDA",
+    "text": "Order intake for NVIDIA's H200 GPU systems from US-based hyperscale cloud providers reached a record backlog level, with lead times extending into 2025. The H200 offers 2.4x the memory bandwidth of the H100, improving inference efficiency for large models. However, the transition to Blackwell may create a temporary inventory digestion period as customers defer some H200 orders.",
+    "source_url": "https://example.com/nvda-h200-record-backlog",
+    "published_at": "2024-10-25T09:00:00Z"
+  },
+  {
+    "symbol": "AAPL",
+    "text": "Apple released iOS 18.1, bringing the first wave of Apple Intelligence features to compatible iPhone 15 Pro models and all iPhone 16 variants. Analysts expect the AI-driven upgrade cycle to boost iPhone unit sales in the coming quarters. The new Writing Tools and Notification Summaries features received positive reviews from early adopters.",
+    "source_url": "https://example.com/aapl-ios18-apple-intelligence",
+    "published_at": "2024-10-21T17:00:00Z"
+  },
+  {
+    "symbol": "AAPL",
+    "text": "Apple confirmed expanded integrations with both Google Gemini and OpenAI's ChatGPT within Siri and the Apple Intelligence platform. The integrations broaden AI capabilities available to end users without requiring on-device compute for all tasks. Privacy advocates raised concerns about the routing of queries to third-party models.",
+    "source_url": "https://example.com/aapl-ai-partnership-google-openai",
+    "published_at": "2024-10-22T10:00:00Z"
+  },
+  {
+    "symbol": "AAPL",
+    "text": "Supply chain data from Asia suggested iPhone 16 Pro and Pro Max shipments were running approximately 8% ahead of the prior year's comparable period, supporting analyst views that Apple Intelligence was catalyzing an upgrade cycle. Component suppliers in Taiwan and South Korea confirmed increased build plans for iPhone 16 variants.",
+    "source_url": "https://example.com/aapl-iphone16-shipments-ahead",
+    "published_at": "2024-10-21T08:00:00Z"
+  },
+  {
+    "symbol": "AAPL",
+    "text": "Analysts forecasted that Apple's Services segment would exceed a $100 billion annualized revenue run rate in fiscal 2025, driven by App Store growth, subscription bundling via Apple One, and increasing advertising revenue from the App Store search product. The high-margin Services mix is expected to drive meaningful operating leverage.",
+    "source_url": "https://example.com/aapl-services-100b-run-rate",
+    "published_at": "2024-10-22T12:00:00Z"
+  },
+  {
+    "symbol": "AAPL",
+    "text": "Apple disclosed that compliance costs related to the EU's Digital Markets Act, including mandatory third-party app store support and interoperability requirements, were expected to negatively impact operating margins in the European region by an estimated 1-2 percentage points. The company is appealing several provisions of the DMA in European courts.",
+    "source_url": "https://example.com/aapl-eu-dma-compliance-costs",
+    "published_at": "2024-10-23T09:00:00Z"
+  },
+  {
+    "symbol": "AAPL",
+    "text": "Enterprise adoption of Apple Vision Pro was gaining traction, with over 2,000 companies developing spatial computing applications. Healthcare, manufacturing, and field service verticals were identified as early adopters. However, the $3,499 price point continues to limit consumer market penetration, and shipments were tracking below initial projections.",
+    "source_url": "https://example.com/aapl-vision-pro-enterprise",
+    "published_at": "2024-10-24T11:00:00Z"
+  },
+  {
+    "symbol": "AAPL",
+    "text": "Reports indicated that Apple was developing custom silicon optimized for server-side AI inference to support Apple Intelligence backend services. The chips would potentially reduce reliance on third-party cloud providers and improve economics of on-demand AI features. Development is in an early stage and commercial deployment is not expected before 2026.",
+    "source_url": "https://example.com/aapl-custom-server-chips",
+    "published_at": "2024-10-24T13:00:00Z"
+  },
+  {
+    "symbol": "AAPL",
+    "text": "Apple's audio subscription products, including Apple Music and Apple Podcasts premium subscriptions, collectively exceeded 700 million subscribers globally according to third-party estimates. Analysts noted the growth reinforces the depth of Apple ecosystem stickiness, but the audio subscription business faces increasing competition from Spotify's expanding podcast presence.",
+    "source_url": "https://example.com/aapl-music-podcasts-700m",
+    "published_at": "2024-10-23T14:00:00Z"
+  },
+  {
+    "symbol": "MSFT",
+    "text": "Microsoft reported Azure and other cloud services revenue growth of 33% year-over-year in its fiscal Q1 2025 results, beating consensus estimates of 31% growth. Management attributed acceleration to AI workload adoption on the Azure platform. The Intelligent Cloud segment operating margin expanded to 47.1%, above the 45.5% consensus.",
+    "source_url": "https://example.com/msft-azure-q1-fy2025",
+    "published_at": "2024-10-23T20:30:00Z"
+  },
+  {
+    "symbol": "MSFT",
+    "text": "Microsoft reported that Copilot seat counts across its enterprise M365 customer base had grown substantially quarter-over-quarter, with average revenue per user increasing as customers added AI features to existing subscriptions. However, some analysts noted that the attach rate remains low relative to total M365 seats, representing a long runway for monetization.",
+    "source_url": "https://example.com/msft-copilot-adoption-enterprise",
+    "published_at": "2024-10-21T15:00:00Z"
+  },
+  {
+    "symbol": "MSFT",
+    "text": "Microsoft's Azure OpenAI Service processed twice the volume of inference requests in Q1 FY2025 compared to Q4 FY2024, reflecting rapid adoption of generative AI applications built on GPT-4 and o1 model families by enterprise customers. The service had over 10,000 enterprise customers, up from 7,000 in the prior quarter.",
+    "source_url": "https://example.com/msft-azure-openai-doubles",
+    "published_at": "2024-10-22T16:00:00Z"
+  },
+  {
+    "symbol": "MSFT",
+    "text": "Microsoft's Intelligent Cloud segment, which encompasses Azure, server products, and enterprise services, reported revenue of $24.1 billion in Q1 FY2025, exceeding the $23.6 billion consensus estimate. Operating income margin in the segment expanded year-over-year, partly driven by lower energy costs at newly commissioned data centers.",
+    "source_url": "https://example.com/msft-intelligent-cloud-beats",
+    "published_at": "2024-10-23T20:45:00Z"
+  },
+  {
+    "symbol": "MSFT",
+    "text": "Microsoft unveiled plans to invest $3.3 billion in a new AI and cloud data center campus in Racine, Wisconsin, creating approximately 2,300 jobs. The investment underscores the company's commitment to expanding domestic AI infrastructure capacity. Critics raised concerns about the concentration of critical infrastructure in a single geographic area.",
+    "source_url": "https://example.com/msft-wisconsin-datacenter-investment",
+    "published_at": "2024-10-24T10:00:00Z"
+  },
+  {
+    "symbol": "MSFT",
+    "text": "Microsoft's Security Copilot product, which applies AI to threat detection and incident response, was cited by enterprise sales teams as a significant cross-sell driver, increasing average contract values. Analyst surveys indicated that Security Copilot had the highest net promoter score of any new Microsoft enterprise product launched in the past five years.",
+    "source_url": "https://example.com/msft-security-copilot-expansion",
+    "published_at": "2024-10-25T09:00:00Z"
+  },
+  {
+    "symbol": "MSFT",
+    "text": "Microsoft reported that GitHub Copilot had been adopted by over 77,000 organizations, with enterprise license signings accelerating in Q1 FY2025. Average developer productivity gains were cited as 55% for routine coding tasks in internal case studies. Some external studies showed more modest gains of 15-25%, suggesting internal figures may reflect selection bias.",
+    "source_url": "https://example.com/msft-github-copilot-77k-orgs",
+    "published_at": "2024-10-24T15:00:00Z"
+  },
+  {
+    "symbol": "MSFT",
+    "text": "One year after completing its acquisition of Activision Blizzard, Microsoft reported that Xbox Game Pass subscriber count had increased materially following the addition of Call of Duty and other Activision titles. However, Activision's mobile gaming revenue declined sequentially, and integration costs continued to weigh on the More Personal Computing segment margin.",
+    "source_url": "https://example.com/msft-activision-integration-year-one",
+    "published_at": "2024-10-23T11:00:00Z"
+  },
+  {
+    "symbol": "GOOGL",
+    "text": "Alphabet reported Q3 2024 results above consensus, with Google Search advertising revenue growing 12% year-over-year and Google Cloud revenue accelerating to 35% growth. AI Overviews in Search drove engagement metrics higher. The strong Search result was particularly impressive given concerns that generative AI would cannibalize search query volume.",
+    "source_url": "https://example.com/googl-q3-2024-earnings-beat",
+    "published_at": "2024-10-23T20:00:00Z"
+  },
+  {
+    "symbol": "GOOGL",
+    "text": "Google DeepMind released Gemini 1.5 Pro with a one-million-token context window, enabling processing of entire codebases, lengthy legal documents, and hours of video within a single inference call. Enterprise API customers gained immediate access. Benchmarks showed Gemini 1.5 Pro performing competitively with GPT-4o on most standard tasks.",
+    "source_url": "https://example.com/googl-gemini-15-pro-release",
+    "published_at": "2024-10-21T16:00:00Z"
+  },
+  {
+    "symbol": "GOOGL",
+    "text": "YouTube's advertising revenue grew 12.2% year-over-year in Q3 2024, returning to double-digit growth for the second consecutive quarter. Connected-TV viewership on YouTube grew 30% year-over-year, representing a significant share gain against traditional linear television broadcasters.",
+    "source_url": "https://example.com/googl-youtube-ad-revenue-growth",
+    "published_at": "2024-10-23T20:05:00Z"
+  },
+  {
+    "symbol": "GOOGL",
+    "text": "The US Department of Justice proposed structural remedies following its landmark antitrust ruling against Google's search distribution agreements, including a potential forced divestiture of the Chrome browser. Analysts viewed the proposals as aggressive and expected a multi-year legal process before any remedy is imposed. The headline risk weighed on the stock.",
+    "source_url": "https://example.com/googl-doj-antitrust-remedies",
+    "published_at": "2024-10-22T13:00:00Z"
+  },
+  {
+    "symbol": "GOOGL",
+    "text": "Google disclosed that its custom TPU v5p accelerators were being deployed at scale for internal Gemini model training, with available capacity also offered to external customers via Google Cloud. The custom silicon strategy provides a structural cost advantage in AI inference versus competitors relying entirely on third-party GPU supply.",
+    "source_url": "https://example.com/googl-tpu-v5p-deployments",
+    "published_at": "2024-10-24T08:00:00Z"
+  },
+  {
+    "symbol": "GOOGL",
+    "text": "Alphabet's board approved an additional $15 billion share repurchase authorization, bringing the total outstanding buyback program to approximately $70 billion. The company repurchased $13.1 billion of shares in Q3 2024 alone. Analysts praised the capital return program but noted that the DOJ antitrust overhang could accelerate buybacks as alternative uses of capital become limited.",
+    "source_url": "https://example.com/googl-buyback-70b-authorization",
+    "published_at": "2024-10-23T21:30:00Z"
+  },
+  {
+    "symbol": "GOOGL",
+    "text": "Google announced that Duet AI features within Workspace would be included in Business Standard and above subscription tiers without additional charge, a strategy to match Microsoft Copilot's bundling approach. The move is expected to reduce near-term AI monetization but is designed to prevent M365 churn among joint Google and Microsoft enterprise customers.",
+    "source_url": "https://example.com/googl-workspace-duet-ai-bundled",
+    "published_at": "2024-10-21T11:00:00Z"
+  },
+  {
+    "symbol": "GOOGL",
+    "text": "Waymo announced expansion of its commercial robotaxi service to Atlanta and Miami, bringing the total number of US cities with paid rides to five. Analysts revised upward their sum-of-the-parts valuations for Alphabet's Other Bets segment. Waymo completed over 1 million paid autonomous rides without a safety-critical incident, strengthening the commercialization case.",
+    "source_url": "https://example.com/googl-waymo-expansion-new-cities",
+    "published_at": "2024-10-25T12:00:00Z"
+  },
+  {
+    "symbol": "META",
+    "text": "Meta Platforms reported Q3 2024 revenue of $40.6 billion, up 19% year-over-year, as advertiser demand continued to recover. Daily active users across the family of apps reached 3.29 billion, a new record. The strong quarter was partially offset by management guidance for Q4 operating expenses above consensus, as Meta accelerated AI infrastructure investments.",
+    "source_url": "https://example.com/meta-q3-2024-revenue-surge",
+    "published_at": "2024-10-23T20:15:00Z"
+  },
+  {
+    "symbol": "META",
+    "text": "Meta's open-source Llama 3.1 405B model surpassed GPT-4 on multiple academic benchmark evaluations, including MMLU and HumanEval. The release reinforced Meta's strategy of distributing capable AI models freely to drive ecosystem adoption. Enterprise customers praised the flexibility of on-premise deployment, though security teams flagged new risks from unconstrained model access.",
+    "source_url": "https://example.com/meta-llama-31-beats-gpt4",
+    "published_at": "2024-10-21T12:00:00Z"
+  },
+  {
+    "symbol": "META",
+    "text": "Meta's Reality Labs segment reported an operating loss of $4.4 billion in Q3 2024, narrowing sequentially as Quest 3 headset sell-through improved and hardware unit economics benefited from manufacturing scale. Cumulative losses in Reality Labs have now exceeded $50 billion since inception, drawing continued scrutiny from activist investors.",
+    "source_url": "https://example.com/meta-reality-labs-losses-narrow",
+    "published_at": "2024-10-23T20:20:00Z"
+  },
+  {
+    "symbol": "META",
+    "text": "Meta disclosed that Instagram Reels' monetization efficiency had narrowed its gap versus TikTok's comparable short-video product to within 10%, down from a 40% gap twelve months prior, driven by improved ad targeting algorithms. If TikTok were to face a US ban, analysts estimate Meta could capture 30-40% of displaced advertising budgets.",
+    "source_url": "https://example.com/meta-reels-tiktok-gap-closes",
+    "published_at": "2024-10-22T14:00:00Z"
+  },
+  {
+    "symbol": "META",
+    "text": "Meta began rolling out its Meta AI assistant, powered by Llama 3.1, as the default in the search bars of WhatsApp, Messenger, and Instagram, reaching a potential user base of over 3 billion people. The rollout positions Meta as a consumer AI access point, though monetization remains nascent and some users reported confusion with the new interface.",
+    "source_url": "https://example.com/meta-ai-assistant-rollout",
+    "published_at": "2024-10-24T09:30:00Z"
+  },
+  {
+    "symbol": "META",
+    "text": "Meta's Threads text-based social network surpassed 275 million monthly active users, CEO Mark Zuckerberg announced, with the platform growing at over 1 million new user sign-ups per day. Monetization of Threads remained nascent. Analysts were divided on whether Threads could sustain its growth trajectory or would plateau as Twitter/X showed signs of user stabilization.",
+    "source_url": "https://example.com/meta-threads-275m-mau",
+    "published_at": "2024-10-23T10:00:00Z"
+  },
+  {
+    "symbol": "META",
+    "text": "Meta reaffirmed its full-year 2024 capital expenditure guidance range of $38 billion to $40 billion, with management indicating that spending was predominantly directed toward AI training and inference infrastructure, including NVIDIA GPU clusters and custom MTIA silicon. Analysts noted that 2025 capex guidance of $50 billion-plus could pressure free cash flow conversion.",
+    "source_url": "https://example.com/meta-capex-guidance-reaffirmed",
+    "published_at": "2024-10-23T20:30:00Z"
+  },
+  {
+    "symbol": "META",
+    "text": "Digital marketing agencies reported reallocating advertising budgets toward Meta's family of apps following measurable improvements in return-on-ad-spend driven by the company's Advantage+ AI-optimized campaign delivery system. However, brand safety concerns following high-profile content moderation failures continued to cause some large advertisers to maintain spending caps.",
+    "source_url": "https://example.com/meta-ad-roas-improvements",
+    "published_at": "2024-10-22T09:00:00Z"
+  },
+  {
+    "symbol": "AMD",
+    "text": "Advanced Micro Devices unveiled its MI325X GPU accelerator, positioning it as a competitive alternative to NVIDIA's H100 for AI inference workloads. CEO Lisa Su highlighted strong customer interest from hyperscale cloud providers. However, CUDA ecosystem lock-in remains a significant barrier to adoption, with most AI training workloads still requiring extensive NVIDIA-specific software optimizations.",
+    "source_url": "https://example.com/amd-mi325x-launch",
+    "published_at": "2024-10-21T09:00:00Z"
+  },
+  {
+    "symbol": "AMD",
+    "text": "Advanced Micro Devices reported Q3 2024 data center segment revenue of $3.5 billion, representing 122% year-over-year growth, driven by MI300X GPU shipments to cloud and hyperscale customers. The result narrowly missed the $3.7 billion consensus expectation, sending shares lower in after-hours trading despite the strong absolute growth rate.",
+    "source_url": "https://example.com/amd-q3-datacenter-122pct-growth",
+    "published_at": "2024-10-24T20:30:00Z"
+  },
+  {
+    "symbol": "AMD",
+    "text": "AMD raised its fiscal 2024 data center GPU revenue guidance to approximately $5 billion, up from a prior target of $4.5 billion, citing stronger-than-expected MI300X uptake from large cloud customers including Microsoft Azure and Oracle Cloud Infrastructure. The guidance raise partially offset investor disappointment from the Q3 revenue miss.",
+    "source_url": "https://example.com/amd-guidance-raise-5b-datacenter",
+    "published_at": "2024-10-24T21:00:00Z"
+  },
+  {
+    "symbol": "AMD",
+    "text": "Industry checks indicated that Intel's Gaudi 3 AI accelerator had not secured significant production deployment contracts with major hyperscale cloud providers, reinforcing AMD's position as the primary alternative to NVIDIA's GPU ecosystem. However, AMD itself faces growing competition from custom silicon developed internally by Google (TPU), Amazon (Trainium), and Microsoft (Maia).",
+    "source_url": "https://example.com/amd-intel-gaudi3-fails-gain-traction",
+    "published_at": "2024-10-22T11:00:00Z"
+  },
+  {
+    "symbol": "AMD",
+    "text": "AMD's EPYC server processors achieved a record 34% market share in cloud data center deployments in Q3 2024, driven by superior performance-per-watt characteristics of the Genoa and Bergamo microarchitectures. Intel's server CPU market share continued to decline, and AMD's gains were accelerating as customers refreshed aging Xeon-based server fleets.",
+    "source_url": "https://example.com/amd-epyc-record-cloud-share",
+    "published_at": "2024-10-21T10:30:00Z"
+  },
+  {
+    "symbol": "AMD",
+    "text": "AMD completed its acquisition of Finnish AI lab Silo AI for $665 million, strengthening its software capabilities for enterprise AI deployment on ROCm-compatible hardware. The acquisition positions AMD to offer both silicon and turnkey AI software solutions. Integration execution remains a risk, as AMD's prior software acquisitions have produced mixed results.",
+    "source_url": "https://example.com/amd-silo-ai-acquisition",
+    "published_at": "2024-10-23T14:00:00Z"
+  },
+  {
+    "symbol": "AMD",
+    "text": "AMD released ROCm 6.2, its open-source GPU programming platform, with significantly improved PyTorch and JAX compatibility. Independent benchmarks showed training throughput for large language models on MI300X closing within 15% of comparable H100 configurations. Developers praised the improvement but noted that a 15% gap still represents a meaningful efficiency disadvantage for large-scale training runs.",
+    "source_url": "https://example.com/amd-rocm-62-cuda-gap",
+    "published_at": "2024-10-22T10:00:00Z"
+  },
+  {
+    "symbol": "AMD",
+    "text": "AMD's gaming segment revenue declined 69% year-over-year in Q3 2024, primarily due to reduced semi-custom chip shipments for PlayStation 5 and Xbox Series consoles as the current console generation entered a mature phase. PC GPU revenue was flat sequentially. The gaming weakness was widely expected, but the magnitude of the decline surprised some investors.",
+    "source_url": "https://example.com/amd-gaming-revenue-decline",
+    "published_at": "2024-10-24T20:45:00Z"
+  },
+  {
+    "symbol": "SPY",
+    "text": "The S&P 500 index gained 0.8% on Wednesday as strong earnings from major technology companies lifted sentiment across markets. The technology sector led gains, with semiconductors and cloud infrastructure names outperforming. Breadth was positive, with advancing issues outnumbering decliners by a 3-to-1 margin on the NYSE.",
+    "source_url": "https://example.com/spy-sp500-big-tech-earnings-lift",
+    "published_at": "2024-10-23T21:00:00Z"
+  },
+  {
+    "symbol": "SPY",
+    "text": "Federal Reserve officials speaking at various events during the week indicated a patient approach to further interest rate reductions, citing still-robust labor market data and inflation above target. Markets reduced the probability of a November rate cut to approximately 25%. The shift in rate expectations contributed to mild pressure on longer-duration equity valuations.",
+    "source_url": "https://example.com/spy-fed-patient-rate-cuts",
+    "published_at": "2024-10-21T16:30:00Z"
+  },
+  {
+    "symbol": "SPY",
+    "text": "The advance estimate for US Q3 2024 GDP growth came in at 2.8% annualized, slightly below the 3.0% consensus, driven by resilient consumer spending and strong business fixed investment. The result reduced fears of an imminent economic slowdown. However, the composition of growth, relying heavily on consumer credit, raised questions about sustainability.",
+    "source_url": "https://example.com/spy-us-gdp-q3-2024",
+    "published_at": "2024-10-23T12:30:00Z"
+  },
+  {
+    "symbol": "SPY",
+    "text": "The S&P 500 index gained 2.3% for the week ending October 25, 2024, its best weekly performance in two months. The information technology sector rose 4.1%, driven by strong earnings from semiconductor and cloud infrastructure companies. Small-cap stocks underperformed as rising yields weighed on rate-sensitive sectors.",
+    "source_url": "https://example.com/spy-weekly-gain-2pct",
+    "published_at": "2024-10-25T16:00:00Z"
+  },
+  {
+    "symbol": "SPY",
+    "text": "The CBOE Volatility Index dropped from 21 to 18 over the week of October 21-25, reflecting reduced uncertainty following strong earnings reports from large-cap technology companies. The decline suggested improving risk appetite among equity investors. Options market makers noted that the rapid VIX decline had the hallmarks of a short-squeeze in volatility products.",
+    "source_url": "https://example.com/spy-vix-declines-sharply",
+    "published_at": "2024-10-25T15:00:00Z"
+  },
+  {
+    "symbol": "SPY",
+    "text": "Earnings reports from Microsoft, Alphabet, Meta, and AMD collectively beat consensus revenue and earnings-per-share estimates, lifting the broader S&P 500. Investors interpreted results as confirmation that AI-related capital spending would continue to drive corporate revenue. Bond markets partially offset equity gains as strong economic data pushed the 10-year Treasury yield higher.",
+    "source_url": "https://example.com/spy-megacap-earnings-lift-sentiment",
+    "published_at": "2024-10-24T17:00:00Z"
+  }
+]
