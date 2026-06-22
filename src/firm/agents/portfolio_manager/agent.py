@@ -34,7 +34,7 @@ class PortfolioManagerAgent(BaseAgent[PMInput, TradeProposal | Hold]):
 
         momentum = _fetch_momentum(self._market_data, inp.symbol, inp.decision_ts, self._risk)
         sentiment = _derive_sentiment(inp.evidence, self._llm)
-        signal = _combine_signal(momentum, sentiment, self._risk)
+        signal = _combine_signal(momentum, sentiment, self._risk, inp.technical_signal)
 
         if signal > self._risk.buy_threshold:
             return _build_buy_proposal(inp, signal, bar, momentum, sentiment, self._risk)
@@ -69,8 +69,18 @@ def _derive_sentiment(evidence: Evidence | Refusal, llm: LLM | None) -> float:
     return compute_sentiment_score(texts)
 
 
-def _combine_signal(momentum: float, sentiment: float, risk: RiskPolicyConfig) -> float:
-    return risk.momentum_weight * momentum + risk.sentiment_weight * sentiment
+def _technical_score(technical: object) -> float:
+    """Convert TechnicalSignal bias to a [-1, 1] score contribution."""
+    from firm.agents.technical.schemas import TechnicalSignal
+
+    if not isinstance(technical, TechnicalSignal):
+        return 0.0
+    return {"bullish": 0.3, "bearish": -0.3, "neutral": 0.0}.get(technical.bias, 0.0)
+
+
+def _combine_signal(momentum: float, sentiment: float, risk: RiskPolicyConfig, technical: object = None) -> float:
+    base = risk.momentum_weight * momentum + risk.sentiment_weight * sentiment
+    return base + _technical_score(technical)
 
 
 def _build_buy_proposal(
@@ -89,8 +99,17 @@ def _build_buy_proposal(
         side="buy",
         qty=qty,
         notional=qty * bar.close,
-        rationale=f"momentum={momentum:.3f} sentiment={sentiment:.3f} signal={signal:.3f}",
+        rationale=_rationale(momentum, sentiment, signal, inp.technical_signal),
     )
+
+
+def _rationale(momentum: float, sentiment: float, signal: float, technical: object) -> str:
+    from firm.agents.technical.schemas import TechnicalSignal
+
+    ta_part = ""
+    if isinstance(technical, TechnicalSignal):
+        ta_part = f" ta_bias={technical.bias} rsi={technical.rsi:.1f}"
+    return f"momentum={momentum:.3f} sentiment={sentiment:.3f} signal={signal:.3f}{ta_part}"
 
 
 def _build_sell_proposal(
@@ -112,5 +131,5 @@ def _build_sell_proposal(
         side="sell",
         qty=qty,
         notional=qty * bar.close,
-        rationale=f"momentum={momentum:.3f} sentiment={sentiment:.3f} signal={signal:.3f}",
+        rationale=_rationale(momentum, sentiment, signal, inp.technical_signal),
     )

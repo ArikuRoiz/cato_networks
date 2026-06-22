@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -18,6 +18,7 @@ class PMInput(BaseModel):
     portfolio: Portfolio
     decision_ts: datetime
     correlation_id: str
+    technical_signal: Any | None = None  # TechnicalSignal | TechnicalUnavailable | None
 
     model_config = {"frozen": True}
 

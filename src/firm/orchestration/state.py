@@ -23,10 +23,13 @@ class GraphState(TypedDict, total=False):
     - ``symbol``: ticker, e.g. ``"NVDA"``.
     - ``decision_ts``: ISO-8601 datetime string (UTC), no-lookahead boundary.
     - ``evidence``: serialised evidence dict from ResearchAgent.
+    - ``technical_signal``: serialised TechnicalSignal or TechnicalUnavailable dict.
     - ``trade_proposal``: serialised proposal from PMAgent.
     - ``approved_trade``: copy of ``trade_proposal`` after risk gate passes.
     - ``hitl_status``: lifecycle of the human decision.
     - ``cycle_outcome``: final result of the cycle, written by the last node.
+    - ``synthesis``: serialised SynthesisReport or SynthesisFailure dict.
+    - ``verdict``: serialised Verdict dict from JudgeAgent.
     - ``error``: human-readable error message if the cycle fails.
     - ``token_count``: running LLM token count, enforced against the budget.
     """
@@ -36,9 +39,12 @@ class GraphState(TypedDict, total=False):
     symbol: str
     decision_ts: str  # ISO datetime string
     evidence: dict | None  # type: ignore[type-arg]
+    technical_signal: dict | None  # type: ignore[type-arg]
     trade_proposal: dict | None  # type: ignore[type-arg]
     approved_trade: dict | None  # type: ignore[type-arg]
     hitl_status: str | None  # "pending" | "approved" | "rejected" | "expired"
     cycle_outcome: str | None  # "filled" | "rejected" | "rejected_timeout" | "hold" | "error"
+    synthesis: dict | None  # type: ignore[type-arg]
+    verdict: dict | None  # type: ignore[type-arg]
     error: str | None
     token_count: int

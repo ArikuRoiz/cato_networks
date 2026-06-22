@@ -31,11 +31,14 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from firm.agents.execution import ExecutionAgent, ExecutionInput
+from firm.agents.judge import JudgeAgent, JudgeInput
 from firm.agents.portfolio_manager import PMInput, PortfolioManagerAgent
 from firm.agents.reporting import ReportingAgent, ReportingInput
 from firm.agents.research import ResearchAgent, ResearchInput
 from firm.agents.risk import ApprovedTrade, RiskAgent, RiskInput
 from firm.agents.risk import HITLRequired as AgentHITLRequired
+from firm.agents.synthesis import SynthesisInput, SynthesisReportAgent
+from firm.agents.technical import TechnicalAnalysisAgent, TechnicalInput
 from firm.config.settings import RiskPolicyConfig
 from firm.domain import Portfolio
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
@@ -118,12 +121,14 @@ def make_pm_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
         decision_ts = _parse_datetime(decision_ts_str)
         evidence_raw = state.get("evidence")
         evidence = _deserialise_evidence(evidence_raw)
+        technical = _deserialise_technical_signal(state.get("technical_signal"))
         inp = PMInput(
             symbol=symbol,
             evidence=evidence,
             portfolio=ports.portfolio,
             decision_ts=decision_ts,
             correlation_id=correlation_id,
+            technical_signal=technical,
         )
         result = agent.run(inp)
         return {"trade_proposal": result.model_dump(mode="json")}
@@ -333,6 +338,94 @@ def make_reporting_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
 
 
 # ---------------------------------------------------------------------------
+# Technical analysis node
+# ---------------------------------------------------------------------------
+
+
+def make_technical_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
+    """Return a ``technical_node`` closed over injected ports.
+
+    Runs in parallel with ``research_node`` (both fan out from START).
+    PM waits for both before making a proposal.
+    """
+    agent = TechnicalAnalysisAgent(market_data=ports.market_data, llm=ports.llm)
+
+    def technical_node(state: GraphState) -> dict[str, Any]:
+        symbol = state.get("symbol", "")
+        decision_ts_str = state.get("decision_ts", "")
+        correlation_id = state.get("correlation_id", "")
+        decision_ts = _parse_datetime(decision_ts_str)
+        inp = TechnicalInput(
+            symbol=symbol,
+            decision_ts=decision_ts,
+            correlation_id=correlation_id,
+        )
+        result = agent.run(inp)
+        return {"technical_signal": result.model_dump(mode="json")}
+
+    return technical_node
+
+
+# ---------------------------------------------------------------------------
+# Synthesis node
+# ---------------------------------------------------------------------------
+
+
+def make_synthesis_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
+    """Return a ``synthesis_node`` that writes an LLM-authored investment memo."""
+    agent = SynthesisReportAgent(llm=ports.llm)
+
+    def synthesis_node(state: GraphState) -> dict[str, Any]:
+        symbol = state.get("symbol", "")
+        decision_ts_str = state.get("decision_ts", "")
+        correlation_id = state.get("correlation_id", "")
+        decision_ts = _parse_datetime(decision_ts_str)
+        inp = SynthesisInput(
+            symbol=symbol,
+            decision_ts=decision_ts,
+            correlation_id=correlation_id,
+            evidence=state.get("evidence"),
+            technical_signal=state.get("technical_signal"),
+            trade_proposal=state.get("trade_proposal"),
+            cycle_outcome=state.get("cycle_outcome"),
+        )
+        result = agent.run(inp)
+        return {"synthesis": result.model_dump(mode="json")}
+
+    return synthesis_node
+
+
+# ---------------------------------------------------------------------------
+# Judge node (LLM-as-a-judge)
+# ---------------------------------------------------------------------------
+
+
+def make_judge_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
+    """Return a ``judge_node`` that scores decision-cycle coherence."""
+    agent = JudgeAgent(llm=ports.llm)
+
+    def judge_node(state: GraphState) -> dict[str, Any]:
+        symbol = state.get("symbol", "")
+        decision_ts_str = state.get("decision_ts", "")
+        correlation_id = state.get("correlation_id", "")
+        decision_ts = _parse_datetime(decision_ts_str)
+        inp = JudgeInput(
+            symbol=symbol,
+            decision_ts=decision_ts,
+            correlation_id=correlation_id,
+            evidence=state.get("evidence"),
+            technical_signal=state.get("technical_signal"),
+            trade_proposal=state.get("trade_proposal"),
+            cycle_outcome=state.get("cycle_outcome"),
+            synthesis=state.get("synthesis"),
+        )
+        result = agent.run(inp)
+        return {"verdict": result.model_dump(mode="json")}
+
+    return judge_node
+
+
+# ---------------------------------------------------------------------------
 # Fallback stubs (used when NodePorts is not provided; for backward compat)
 # ---------------------------------------------------------------------------
 
@@ -389,6 +482,25 @@ def _str_to_uuid(value: str) -> UUID:
         return UUID(value)
     except (ValueError, AttributeError):
         return uuid4()
+
+
+def _deserialise_technical_signal(raw: dict[str, Any] | None) -> Any:
+    """Deserialise technical_signal dict to TechnicalSignal or TechnicalUnavailable."""
+    from firm.agents.technical import TechnicalSignal, TechnicalUnavailable
+
+    if raw is None:
+        return None
+    if "bias" in raw:
+        try:
+            return TechnicalSignal.model_validate(raw)
+        except Exception:
+            pass
+    if "reason" in raw:
+        try:
+            return TechnicalUnavailable.model_validate(raw)
+        except Exception:
+            pass
+    return None
 
 
 def _deserialise_evidence(raw: dict[str, Any] | None) -> Any:

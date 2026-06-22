@@ -1,16 +1,23 @@
 """LangGraph pipeline graph factory.
 
-``build_graph`` wires the five pipeline nodes into a directed graph with a
+``build_graph`` wires all pipeline nodes into a directed graph with a
 conditional edge at the risk gate and compiles it with the supplied
 checkpointer.
 
 Graph topology:
-    START → research → pm → risk → (conditional) → execution → reporting → END
-                                 ↘ (rejected)      → reporting → END
+    START → research ──┐
+    START → technical ─┴→ pm → risk → (approved) → execution → reporting → synthesis → judge → END
+                                    ↘ (rejected)  → reporting → synthesis → judge → END
 
-The risk node uses ``interrupt()`` internally (not ``interrupt_before``) so the
-interrupt site is inside the node body, giving the node full control over the
-HITL branching logic after resume.
+research and technical run in parallel (both fan out from START); pm waits
+for both before building a proposal.
+
+synthesis writes an LLM-authored investment memo; judge scores coherence
+on every cycle (approved or rejected) for process-quality tracking.
+
+The risk node uses ``interrupt()`` internally (not ``interrupt_before``) so
+the interrupt site is inside the node body, giving the node full control
+over the HITL branching logic after resume.
 """
 
 from __future__ import annotations
@@ -79,16 +86,40 @@ def build_graph(
     builder: StateGraph = StateGraph(GraphState)  # type: ignore[type-arg]
 
     builder.add_node("research", research_node)
+    builder.add_node("technical", technical_node)
     builder.add_node("pm", pm_node)
     builder.add_node("risk", make_risk_node(resolved_policy))  # type: ignore[arg-type]
     builder.add_node("execution", execution_node)
     builder.add_node("reporting", reporting_node)
+    builder.add_node("synthesis", synthesis_node)
+    builder.add_node("judge", judge_node)
 
+    # research and technical run in parallel; pm fans in from both
     builder.add_edge(START, "research")
+    builder.add_edge(START, "technical")
     builder.add_edge("research", "pm")
+    builder.add_edge("technical", "pm")
     builder.add_edge("pm", "risk")
     builder.add_conditional_edges("risk", _route_after_risk, ["execution", "reporting"])
     builder.add_edge("execution", "reporting")
-    builder.add_edge("reporting", END)
+    builder.add_edge("reporting", "synthesis")
+    builder.add_edge("synthesis", "judge")
+    builder.add_edge("judge", END)
 
     return builder.compile(checkpointer=checkpointer)
+
+
+# ---------------------------------------------------------------------------
+# Stub nodes (used when NodePorts not provided — replaced at runtime)
+# ---------------------------------------------------------------------------
+
+def technical_node(state: GraphState) -> dict:  # type: ignore[type-arg]
+    return {"technical_signal": {"symbol": state.get("symbol", ""), "reason": "stub"}}
+
+
+def synthesis_node(state: GraphState) -> dict:  # type: ignore[type-arg]
+    return {"synthesis": {"symbol": state.get("symbol", ""), "reason": "stub"}}
+
+
+def judge_node(state: GraphState) -> dict:  # type: ignore[type-arg]
+    return {"verdict": {"coherence_score": 3, "alignment": "partial", "flags": [], "recommendation": "stub", "reasoning": "stub"}}
