@@ -31,8 +31,7 @@ from uuid import UUID
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
-from firm.agents.bear_researcher import BearFailure, BearInput, BearResearcherAgent
-from firm.agents.bull_researcher import BullFailure, BullInput, BullResearcherAgent
+from firm.agents.debater import DebaterAgent, DebaterCase, DebaterFailure, DebaterInput
 from firm.agents.execution import ExecutionAgent, ExecutionInput
 from firm.agents.judge import JudgeAgent, JudgeFailure, JudgeInput
 from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
@@ -383,27 +382,25 @@ MAX_DEBATE_ROUNDS = 1  # one full bull+bear exchange by default
 
 
 def make_bull_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
-    agent = BullResearcherAgent(llm=ports.llm)
+    agent = DebaterAgent(llm=ports.llm, stance="bull")
 
     def bull_node(state: GraphState) -> dict[str, Any]:
         symbol = state.get("symbol", "")
         correlation_id = state.get("correlation_id", "")
         rounds = state.get("debate_rounds", 0)
-        evidence_summary = _evidence_text(state.get("evidence"))
-        technical_summary = _technical_text(state.get("technical_signal"))
-        bear_history: list[str] = list(state.get("bear_history") or [])
-        inp = BullInput(
+        inp = DebaterInput(
             symbol=symbol,
             round_num=rounds + 1,
             correlation_id=correlation_id,
-            evidence_summary=evidence_summary,
-            technical_summary=technical_summary,
-            bear_history=bear_history,
+            stance="bull",
+            evidence_summary=_evidence_text(state.get("evidence")),
+            technical_summary=_technical_text(state.get("technical_signal")),
+            opponent_history=list(state.get("bear_history") or []),
         )
         result = agent.run(inp)
         argument = (
             f"[Bull unavailable: {result.failure_reason}]"
-            if isinstance(result, BullFailure)
+            if isinstance(result, DebaterFailure)
             else result.argument
         )
         existing: list[str] = list(state.get("bull_history") or [])
@@ -413,27 +410,25 @@ def make_bull_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
 
 
 def make_bear_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
-    agent = BearResearcherAgent(llm=ports.llm)
+    agent = DebaterAgent(llm=ports.llm, stance="bear")
 
     def bear_node(state: GraphState) -> dict[str, Any]:
         symbol = state.get("symbol", "")
         correlation_id = state.get("correlation_id", "")
         rounds = state.get("debate_rounds", 0)
-        evidence_summary = _evidence_text(state.get("evidence"))
-        technical_summary = _technical_text(state.get("technical_signal"))
-        bull_history: list[str] = list(state.get("bull_history") or [])
-        inp = BearInput(
+        inp = DebaterInput(
             symbol=symbol,
             round_num=rounds + 1,
             correlation_id=correlation_id,
-            evidence_summary=evidence_summary,
-            technical_summary=technical_summary,
-            bull_history=bull_history,
+            stance="bear",
+            evidence_summary=_evidence_text(state.get("evidence")),
+            technical_summary=_technical_text(state.get("technical_signal")),
+            opponent_history=list(state.get("bull_history") or []),
         )
         result = agent.run(inp)
         argument = (
             f"[Bear unavailable: {result.failure_reason}]"
-            if isinstance(result, BearFailure)
+            if isinstance(result, DebaterFailure)
             else result.argument
         )
         existing: list[str] = list(state.get("bear_history") or [])

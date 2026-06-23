@@ -2,26 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from firm.agents.synthesis.schemas import CycleSnapshot
 from firm.domain.enums import VerdictAlignment
 
 
-class JudgeInput(BaseModel):
-    symbol: str
-    decision_ts: datetime
-    correlation_id: str
-    evidence: dict[str, Any] | None = None
-    technical_signal: dict[str, Any] | None = None
-    research_plan: dict[str, Any] | None = None
-    trade_proposal: dict[str, Any] | None = None
-    cycle_outcome: str | None = None
-    synthesis: dict[str, Any] | None = None
+class JudgeInput(CycleSnapshot):
+    """Cycle snapshot plus the synthesis memo the judge must evaluate."""
 
-    model_config = {"frozen": True}
+    synthesis: dict[str, Any] | None = None
 
 
 class Verdict(BaseModel):

@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import json
 
+from firm.agents._cycle_format import (
+    evidence_summary,
+    proposal_summary,
+    research_plan_summary,
+    technical_summary,
+)
 from firm.agents.base import BaseAgent
 from firm.agents.synthesis.schemas import (
     SynthesisFailure,
@@ -47,55 +53,14 @@ class SynthesisReportAgent(BaseAgent[SynthesisInput, SynthesisReport | Synthesis
 # ---------------------------------------------------------------------------
 
 
-def _evidence_summary(evidence: dict | None) -> str:  # type: ignore[type-arg]
-    if not evidence:
-        return "No fundamental evidence retrieved."
-    claims = evidence.get("claims", [])
-    if not claims:
-        return "Research ran but found no usable claims."
-    lines = [f"- {c.get('text', '')}" for c in claims[:5]]
-    return "\n".join(lines)
-
-
-def _technical_summary(technical: dict | None) -> str:  # type: ignore[type-arg]
-    if not technical or "reason" in technical:
-        return "Technical analysis unavailable."
-    bias = technical.get("bias", "neutral")
-    headline = technical.get("headline", "")
-    rsi = technical.get("rsi", 0.0)
-    macd_cross = technical.get("macd_cross", "none")
-    return f"Bias: {bias} | RSI: {rsi:.1f} | MACD cross: {macd_cross}\n{headline}"
-
-
-def _proposal_summary(proposal: dict | None) -> str:  # type: ignore[type-arg]
-    if not proposal:
-        return "Hold — no proposal generated."
-    if "qty" in proposal:
-        side = proposal.get("side", "?")
-        qty = proposal.get("qty", "?")
-        notional = proposal.get("notional", "?")
-        rationale = proposal.get("rationale", "")
-        return f"{side.upper()} {qty} shares (${notional}) — {rationale}"
-    return f"Hold — {proposal.get('reason', 'unknown reason')}"
-
-
-def _research_plan_summary(plan: dict | None) -> str:  # type: ignore[type-arg]
-    if not plan or "failure_reason" in plan:
-        return "Research plan unavailable."
-    rec = plan.get("recommendation", "unknown")
-    conviction = float(plan.get("conviction", 0.0))
-    rationale = plan.get("rationale", "")
-    return f"Recommendation: {rec} (conviction: {conviction:.0%}). {rationale}"
-
-
 def _build_messages(inp: SynthesisInput) -> list[LLMMessage]:
     date_str = inp.decision_ts.strftime("%Y-%m-%d")
     user = (
         f"Investment decision memo for {inp.symbol} — {date_str}\n\n"
-        f"FUNDAMENTAL EVIDENCE (Research Agent):\n{_evidence_summary(inp.evidence)}\n\n"
-        f"TECHNICAL ANALYSIS:\n{_technical_summary(inp.technical_signal)}\n\n"
-        f"DEBATE OUTCOME (Research Manager):\n{_research_plan_summary(inp.research_plan)}\n\n"
-        f"PORTFOLIO MANAGER DECISION:\n{_proposal_summary(inp.trade_proposal)}\n\n"
+        f"FUNDAMENTAL EVIDENCE (Research Agent):\n{evidence_summary(inp.evidence)}\n\n"
+        f"TECHNICAL ANALYSIS:\n{technical_summary(inp.technical_signal)}\n\n"
+        f"DEBATE OUTCOME (Research Manager):\n{research_plan_summary(inp.research_plan)}\n\n"
+        f"PORTFOLIO MANAGER DECISION:\n{proposal_summary(inp.trade_proposal)}\n\n"
         f"CYCLE OUTCOME: {inp.cycle_outcome or 'unknown'}\n\n"
         f"Write a professional investment memo. Respond ONLY with:\n{_JSON_SCHEMA}"
     )

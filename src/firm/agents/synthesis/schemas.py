@@ -8,7 +8,13 @@ from typing import Any
 from pydantic import BaseModel
 
 
-class SynthesisInput(BaseModel):
+class CycleSnapshot(BaseModel):
+    """Shared base for agents that audit a full decision cycle.
+
+    Both ``SynthesisReportAgent`` and ``JudgeAgent`` receive this context.
+    ``JudgeInput`` extends it with the synthesis memo produced by the former.
+    """
+
     symbol: str
     decision_ts: datetime
     correlation_id: str
@@ -19,6 +25,10 @@ class SynthesisInput(BaseModel):
     cycle_outcome: str | None = None
 
     model_config = {"frozen": True}
+
+
+# SynthesisInput is a type alias — the full snapshot is the synthesis agent's input.
+SynthesisInput = CycleSnapshot
 
 
 class SynthesisReport(BaseModel):

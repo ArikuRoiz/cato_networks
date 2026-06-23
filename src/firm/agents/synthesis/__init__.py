@@ -1,4 +1,15 @@
 from firm.agents.synthesis.agent import SynthesisReportAgent
-from firm.agents.synthesis.schemas import SynthesisFailure, SynthesisInput, SynthesisReport
+from firm.agents.synthesis.schemas import (
+    CycleSnapshot,
+    SynthesisFailure,
+    SynthesisInput,
+    SynthesisReport,
+)
 
-__all__ = ["SynthesisFailure", "SynthesisInput", "SynthesisReport", "SynthesisReportAgent"]
+__all__ = [
+    "CycleSnapshot",
+    "SynthesisFailure",
+    "SynthesisInput",
+    "SynthesisReport",
+    "SynthesisReportAgent",
+]

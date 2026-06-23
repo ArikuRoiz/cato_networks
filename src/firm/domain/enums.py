@@ -28,17 +28,21 @@ class CycleOutcome(StrEnum):
 
 
 class HITLStatus(StrEnum):
+    """Unified HITL / approval status enum.
+
+    ``ApprovalStatus`` is an alias for backward compatibility.
+    ``PENDING`` is reserved for future use (no active code path sets it yet).
+    ``EDITED`` has been removed — no code path ever set it.
+    """
+
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
     EXPIRED = "expired"
 
 
-class ApprovalStatus(StrEnum):
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    EDITED = "edited"
-    EXPIRED = "expired"
+# Backward-compatible alias — prefer HITLStatus in new code.
+ApprovalStatus = HITLStatus
 
 
 class Recommendation(StrEnum):
