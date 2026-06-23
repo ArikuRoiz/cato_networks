@@ -39,12 +39,33 @@ class _TextMessage:
         parts = self.text.strip().split(maxsplit=1)
         if len(parts) < 2:
             return ""
-        return parts[1].strip().upper()
+        return parts[1].strip().split()[0].upper()
+
+    @property
+    def is_force(self) -> bool:
+        """True when a 'force'/'--force' word follows the command and ticker.
+
+        Mirrors ``firm run --force-buy``: ``/run NVDA force`` injects a
+        high-conviction BUY so the HITL approval card always appears.
+        """
+        words = {w.lower() for w in self.text.split()[2:]}
+        return bool(words & {"force", "--force"})
 
 
 @dataclass(frozen=True)
 class _CallbackTap:
-    """An inline-keyboard button press from the operator."""
+    """An inline-keyboard button press from the operator.
+
+    callback_data scheme (``:``-delimited)::
+
+        approve:<cid>        — accept the recommended action
+        reject:<cid>         — reject; show the alternatives keyboard
+        act:<verb>:<cid>     — pick an alternative action (verb ∈ buy/sell/hold)
+
+    The leading token is the *kind*; the trailing token is always the
+    correlation_id.  For ``act`` taps the middle token is the resume *verb*
+    handed straight to ``resume_decision``.
+    """
 
     update_id: int
     callback_query_id: str
@@ -53,23 +74,39 @@ class _CallbackTap:
     from_username: str | None
 
     @property
-    def action(self) -> str:
-        """Button action word: 'approve', 'reject', or 'edit'."""
-        return self.callback_data.split(":", 1)[0]
+    def _parts(self) -> list[str]:
+        return self.callback_data.split(":")
+
+    @property
+    def kind(self) -> str:
+        """Leading token: 'approve', 'reject', or 'act'."""
+        return self._parts[0]
 
     @property
     def correlation_id(self) -> str:
-        """Correlation ID encoded in callback_data after the first ':'."""
-        parts = self.callback_data.split(":", 1)
-        return parts[1] if len(parts) == 2 else ""
+        """Correlation ID is always the trailing token of callback_data."""
+        parts = self._parts
+        return parts[-1] if len(parts) >= 2 else ""
+
+    @property
+    def verb(self) -> str:
+        """Resume verb for an 'act' tap (buy/sell/hold); '' otherwise."""
+        parts = self._parts
+        if self.kind == "act" and len(parts) == 3:
+            return parts[1]
+        return ""
 
     @property
     def is_approve(self) -> bool:
-        return self.action == "approve"
+        return self.kind == "approve"
 
     @property
     def is_reject(self) -> bool:
-        return self.action == "reject"
+        return self.kind == "reject"
+
+    @property
+    def is_action(self) -> bool:
+        return self.kind == "act"
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +126,7 @@ class _PendingRun:
     thread_id: str
     chat_id: int
     symbol: str
+    recommendation: str
 
 
 # ---------------------------------------------------------------------------

@@ -2,13 +2,19 @@
 
 All tests use ``MemorySaver`` — no Postgres required.
 
+HITL model (every cycle pauses unless ``hitl_mode='threshold'``):
+  - default ``hitl_mode='always'`` → ``make_risk_node`` interrupts on every
+    recommendation, even below the notional threshold.
+  - ``hitl_mode='threshold'`` (legacy) → only proposals whose notional exceeds
+    the HITL threshold pause; smaller trades auto-approve.
+
 Coverage:
-  - ``_hitl_exceeds_threshold``: below, at, and above the threshold boundary.
-  - ``make_risk_node`` via ``build_graph``:
+  - ``_should_pause``: always vs. threshold gating.
+  - ``make_risk_node``:
       * ``trade_proposal=None`` error path.
-      * notional below threshold → approved_trade set, no interrupt.
-      * notional at threshold (equality) → approved_trade set, no interrupt
-        (strictly-above boundary is documented in _hitl_exceeds_threshold).
+      * threshold mode, notional below threshold → approved_trade set, no interrupt.
+      * threshold mode, notional at threshold (equality) → approved_trade set, no interrupt.
+      * always mode, notional below threshold → interrupt anyway.
       * notional above threshold → graph interrupts at risk node.
   - ``_route_after_risk``: routes to "execution" when approved_trade is set,
     routes to "reporting" otherwise.
@@ -28,11 +34,12 @@ from firm.adapters.fakes import (
     FakeMarketData,
     FakeReportSink,
 )
+from firm.agents.risk import HITLRequired as AgentHITLRequired
 from firm.config.settings import RiskPolicyConfig
 from firm.domain import Portfolio, RiskPolicy
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.orchestration.graph import _route_after_risk
-from firm.orchestration.nodes import NodePorts, _hitl_exceeds_threshold, make_risk_node
+from firm.orchestration.nodes import NodePorts, _should_pause, make_risk_node
 from firm.orchestration.state import GraphState
 
 # ---------------------------------------------------------------------------
@@ -63,17 +70,16 @@ def _make_ports(risk_policy: RiskPolicyConfig) -> NodePorts:
     )
 
 
-_NAV_ESTIMATE = Decimal("10000")
-_HITL_THRESHOLD_PCT = Decimal("0.05")
-_THRESHOLD = _HITL_THRESHOLD_PCT * _NAV_ESTIMATE  # == 500
-
-
-def _make_risk_policy(hitl_threshold_pct: float = 0.05) -> RiskPolicyConfig:
+def _make_risk_policy(
+    hitl_threshold_pct: float = 0.05,
+    hitl_mode: str = "always",
+) -> RiskPolicyConfig:
     return RiskPolicyConfig(
         max_trade_notional_pct=0.10,
         max_name_concentration_pct=0.25,
         daily_loss_halt_pct=0.03,
         hitl_threshold_pct=hitl_threshold_pct,
+        hitl_mode=hitl_mode,  # type: ignore[arg-type]
         buy_threshold=0.15,
         sell_threshold=-0.10,
         momentum_weight=0.60,
@@ -112,25 +118,41 @@ def _thread_config(thread_id: str) -> dict:  # type: ignore[type-arg]
 
 
 # ---------------------------------------------------------------------------
-# _hitl_exceeds_threshold — boundary tests
+# _should_pause — always vs. threshold gating
 # ---------------------------------------------------------------------------
 
 
-def test_hitl_threshold_below_does_not_trigger() -> None:
-    assert _hitl_exceeds_threshold(Decimal("499"), _THRESHOLD) is False
+class _FakeApproved:
+    """Stand-in for an ApprovedTrade-shaped risk result (below threshold)."""
 
 
-def test_hitl_threshold_equal_does_not_trigger() -> None:
-    # Boundary is strictly above (>), so equality must not trigger HITL.
-    assert _hitl_exceeds_threshold(Decimal("500"), _THRESHOLD) is False
+def _hitl_required() -> AgentHITLRequired:
+    """A HITLRequired result (notional above the HITL threshold)."""
+    from firm.agents.portfolio_manager.schemas import TradeProposal
+    from firm.domain.enums import TradeSide
+
+    proposal = TradeProposal(
+        symbol="NVDA",
+        side=TradeSide.BUY,
+        qty=Decimal("10"),
+        notional=Decimal("1000"),
+        rationale="stub",
+    )
+    return AgentHITLRequired(proposal=proposal, reason="above threshold", correlation_id="cid")
 
 
-def test_hitl_threshold_above_triggers() -> None:
-    assert _hitl_exceeds_threshold(Decimal("501"), _THRESHOLD) is True
+def test_should_pause_always_mode_pauses_below_threshold() -> None:
+    # always mode pauses on every recommendation, even an approved (below-threshold) one.
+    assert _should_pause("always", _FakeApproved()) is True
 
 
-def test_hitl_threshold_well_above_triggers() -> None:
-    assert _hitl_exceeds_threshold(Decimal("1000"), _THRESHOLD) is True
+def test_should_pause_threshold_mode_skips_below_threshold() -> None:
+    # threshold mode only pauses on HITLRequired; an approved result auto-approves.
+    assert _should_pause("threshold", _FakeApproved()) is False
+
+
+def test_should_pause_threshold_mode_pauses_above_threshold() -> None:
+    assert _should_pause("threshold", _hitl_required()) is True
 
 
 # ---------------------------------------------------------------------------
@@ -214,12 +236,15 @@ def test_risk_node_missing_trade_proposal_returns_error() -> None:
 
 
 def test_risk_node_below_threshold_sets_approved_trade() -> None:
-    """notional < threshold must set approved_trade and not interrupt."""
+    """threshold mode: notional < threshold must set approved_trade and not interrupt."""
     # Use make_risk_node directly to avoid the full pipeline; the graph-level
     # interrupt mechanism is tested separately in test_risk_node_above_threshold_interrupts.
     from langchain_core.runnables import RunnableConfig
 
-    high_threshold_policy = _make_risk_policy(hitl_threshold_pct=0.20)  # threshold=2000
+    # threshold mode so the below-threshold trade auto-approves (always mode would interrupt).
+    high_threshold_policy = _make_risk_policy(
+        hitl_threshold_pct=0.20, hitl_mode="threshold"
+    )  # threshold=2000
     risk_fn = make_risk_node(_make_ports(high_threshold_policy))
 
     # notional=1000 < threshold=2000 → no interrupt, approved_trade is set.
@@ -230,11 +255,43 @@ def test_risk_node_below_threshold_sets_approved_trade() -> None:
     assert "cycle_outcome" not in result or result.get("cycle_outcome") is None
 
 
+def test_risk_node_always_mode_interrupts_below_threshold() -> None:
+    """always mode: even a below-threshold trade must pause for the human.
+
+    interrupt() only works inside a running graph, so drive the node through a
+    minimal inject→risk graph and assert an __interrupt__ event is emitted even
+    though the notional (1000) is below the HITL threshold (2000).
+    """
+    from langgraph.constants import END, START
+    from langgraph.graph import StateGraph
+
+    policy = _make_risk_policy(hitl_threshold_pct=0.20, hitl_mode="always")  # threshold=2000
+    risk_fn = make_risk_node(_make_ports(policy))
+
+    def _inject(state: GraphState) -> dict:  # type: ignore[type-arg]
+        return {}
+
+    builder: StateGraph = StateGraph(GraphState)  # type: ignore[type-arg]
+    builder.add_node("inject", _inject)
+    builder.add_node("risk", risk_fn)
+    builder.add_edge(START, "inject")
+    builder.add_edge("inject", "risk")
+    builder.add_edge("risk", END)
+    mini_graph = builder.compile(checkpointer=MemorySaver())
+
+    state = _make_state("1000")  # below threshold, but always mode pauses anyway
+    config = _thread_config(str(uuid.uuid4()))
+    events = list(mini_graph.stream(state, config, stream_mode="updates"))
+    assert [e for e in events if "__interrupt__" in e], (
+        "always mode must interrupt even below the HITL threshold"
+    )
+
+
 def test_risk_node_at_threshold_does_not_interrupt() -> None:
-    """notional == threshold must not trigger HITL (strictly-above boundary)."""
+    """threshold mode: notional == threshold must not trigger HITL (strictly-above boundary)."""
     from langchain_core.runnables import RunnableConfig
 
-    policy = _make_risk_policy(hitl_threshold_pct=0.10)  # threshold = 1000
+    policy = _make_risk_policy(hitl_threshold_pct=0.10, hitl_mode="threshold")  # threshold = 1000
     risk_fn = make_risk_node(_make_ports(policy))
 
     state: GraphState = GraphState(

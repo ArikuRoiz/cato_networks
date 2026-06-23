@@ -54,10 +54,14 @@ def format_approval_card(req_dict: dict[str, Any]) -> str:
     if bear_case:
         lines += ["", f"👎 *Cons:* {bear_case}"]
 
-    lines += [
-        "",
-        f"📋 *Trade:* {side} {qty} {symbol} ≈ ${notional_str}",
-    ]
+    lines += [""]
+    if _is_real_trade(qty, notional):
+        lines += [f"📋 *Trade:* {side} {qty} {symbol} ≈ ${notional_str}"]
+    else:
+        lines += [
+            f"📋 *Proposed action:* {rec_str} — no trade to place "
+            "(tap *Reject* to place a Buy/Sell instead)."
+        ]
 
     if reason:
         lines += [f"⚖️ *Risk note:* {reason}"]
@@ -74,17 +78,27 @@ def format_decision_report(
     verdict: dict[str, Any] | None,
     approved_trade: dict[str, Any] | None,
     rejection_reason: str | None = None,
+    hitl_decision: str | None = None,
+    recommendation: str | None = None,
 ) -> str:
     """Return the post-decision "what I did & why" message.
 
-    Covers both approved (filled) and rejected paths.
+    The label reflects the ACTUAL decision the human made, not merely
+    approve-vs-reject: an approve, an override-buy, an override-sell, and an
+    override-to-hold each read differently — because both an approve and an
+    override resolve to ``hitl_status == "approved"`` internally, the
+    ``hitl_decision`` is what disambiguates them here.
     """
-    was_approved = hitl_status == "approved"
+    is_override = _is_override(hitl_decision)
     was_filled = cycle_outcome == "filled"
 
-    if was_approved and was_filled:
-        return _format_fill_report(symbol, approved_trade, synthesis, verdict)
-    if was_approved and not was_filled:
+    if _is_hold_decision(hitl_decision):
+        return _format_held_report(symbol, is_override, recommendation, synthesis)
+    if was_filled:
+        return _format_fill_report(
+            symbol, approved_trade, synthesis, verdict, is_override, recommendation
+        )
+    if hitl_status == "approved":
         return _format_approved_not_filled(symbol, cycle_outcome, synthesis)
     return _format_rejection_report(symbol, rejection_reason, synthesis)
 
@@ -117,6 +131,14 @@ def format_portfolio_report(
 # ---------------------------------------------------------------------------
 # Private helpers — each does exactly one formatting concern
 # ---------------------------------------------------------------------------
+
+
+def _is_real_trade(qty: Any, notional: Any) -> bool:
+    """True only when there's an actual sized trade (qty > 0 and notional > 0)."""
+    try:
+        return float(qty) > 0 and float(notional) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _fmt_notional(notional: Any) -> str:
@@ -157,26 +179,45 @@ def _fmt_summary(synthesis: dict[str, Any] | None) -> str:
     return str(synthesis.get("executive_summary", ""))
 
 
+def _is_override(hitl_decision: str | None) -> bool:
+    return bool(hitl_decision) and str(hitl_decision).startswith("override:")
+
+
+def _is_hold_decision(hitl_decision: str | None) -> bool:
+    return hitl_decision == "override:hold"
+
+
+def _trade_qty_price(approved_trade: dict[str, Any] | None) -> tuple[Any, Any]:
+    """Pull (qty, requested_price) out of a serialised approved_trade, if present."""
+    trade = (approved_trade or {}).get("trade")
+    if not isinstance(trade, dict):
+        return None, None
+    return trade.get("qty"), trade.get("requested_price")
+
+
 def _format_fill_report(
     symbol: str,
     approved_trade: dict[str, Any] | None,
     synthesis: dict[str, Any] | None,
     verdict: dict[str, Any] | None,
+    is_override: bool,
+    recommendation: str | None,
 ) -> str:
-    trade = approved_trade or {}
-    qty = trade.get("trade", {}).get("qty") if isinstance(trade.get("trade"), dict) else None
-    price = (
-        trade.get("trade", {}).get("requested_price")
-        if isinstance(trade.get("trade"), dict)
-        else None
-    )
+    qty, price = _trade_qty_price(approved_trade)
+    side = _fill_side(approved_trade)
+    qty_str = qty if qty is not None else "?"
+    price_suffix = f" @ ${price}" if price is not None else ""
 
-    fill_line = f"✅ *Approved → FILLED {qty or '?'} {symbol}"
-    if price is not None:
-        fill_line += f" @ ${price}"
-    fill_line += "*"
+    if is_override:
+        emoji = "🔴" if side == "sell" else "🟢"
+        verb = "Sold" if side == "sell" else "Bought"
+        head = f"{emoji} *Override → {verb} {qty_str} {symbol}{price_suffix}*"
+    else:
+        head = f"✅ *Approved → FILLED {qty_str} {symbol}{price_suffix}*"
 
-    lines = [fill_line]
+    lines = [head]
+    if is_override and recommendation:
+        lines.append(f"_You overrode the desk's {recommendation} recommendation._")
 
     summary = _fmt_summary(synthesis)
     if summary:
@@ -186,6 +227,32 @@ def _format_fill_report(
     if score != "-":
         lines += [f"⚖️ Judge: {score}"]
 
+    return "\n".join(lines)
+
+
+def _fill_side(approved_trade: dict[str, Any] | None) -> str:
+    trade = (approved_trade or {}).get("trade")
+    if isinstance(trade, dict):
+        return str(trade.get("side", "buy")).lower()
+    return "buy"
+
+
+def _format_held_report(
+    symbol: str,
+    is_override: bool,
+    recommendation: str | None,
+    synthesis: dict[str, Any] | None,
+) -> str:
+    if is_override:
+        head = f"⏸ *Held (your override) — no trade for {symbol}.*"
+        lines = [head]
+        if recommendation:
+            lines.append(f"_You overrode the desk's {recommendation} recommendation._")
+    else:
+        lines = [f"⏸ *Held — no trade for {symbol}.*"]
+    summary = _fmt_summary(synthesis)
+    if summary:
+        lines += ["", f"📝 {summary}"]
     return "\n".join(lines)
 
 

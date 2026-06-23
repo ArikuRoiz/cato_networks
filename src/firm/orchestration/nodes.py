@@ -43,7 +43,7 @@ from firm.agents.research_manager import (
     ResearchManagerFailure,
     ResearchManagerInput,
 )
-from firm.agents.risk import ApprovedTrade, RiskAgent, RiskInput
+from firm.agents.risk import ApprovedTrade, Rejected, RiskAgent, RiskInput
 from firm.agents.risk import HITLRequired as AgentHITLRequired
 from firm.agents.synthesis import SynthesisInput, SynthesisReportAgent
 from firm.agents.technical import TechnicalAnalysisAgent, TechnicalInput
@@ -51,6 +51,7 @@ from firm.config.settings import RiskPolicyConfig
 from firm.domain import Portfolio
 from firm.domain.enums import CycleOutcome, HITLStatus, Recommendation, RefusalReason, TradeSide
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
+from firm.orchestration.hitl import HITLDecision, parse_decision
 from firm.orchestration.state import GraphState
 from firm.persistence.ledger import CycleAuditRecord, LedgerRepository
 from firm.ports.evidence import EvidenceStore
@@ -214,91 +215,215 @@ def make_risk_node(
         prices = _extract_prices(proposal, portfolio)
         correlation_id = state.get("correlation_id", "")
 
-        inp = RiskInput(
+        # Hard-limit verdict from RiskPolicy.  A genuine TradeProposal that
+        # breaches the per-trade / concentration hard limits is rejected up
+        # front — no human can clear a hard breach from the risk node.
+        risk_result = _evaluate_risk(agent, proposal, portfolio, prices, correlation_id)
+        if isinstance(risk_result, Rejected) and not isinstance(proposal, Hold):
+            return {"cycle_outcome": CycleOutcome.REJECTED, "error": risk_result.reason}
+
+        # Pre-build the ApprovedTrade for the *recommended* action so its
+        # idempotency_key / UUID are stable across the interrupt boundary.
+        # (None when the recommendation is Hold — there is no trade to pre-size.)
+        recommended = _recommended_approved(risk_result, proposal, correlation_id)
+
+        if not _should_pause(ports.risk_policy.hitl_mode, risk_result):
+            # threshold mode, below threshold → auto-approve the recommended action.
+            return _auto_outcome(recommended)
+
+        # Pause for the human on every cycle (always mode) or above-threshold
+        # (threshold mode).  The interrupt return value carries the decision.
+        raw_decision = interrupt(
+            _hitl_payload(proposal_raw, state.get("research_plan"), recommended)
+        )
+        decision = parse_decision(raw_decision)
+        return _resume_for_decision(ports, state, decision, recommended, correlation_id)
+
+    return risk_node
+
+
+def _evaluate_risk(
+    agent: RiskAgent,
+    proposal: Any,
+    portfolio: Portfolio,
+    prices: dict[str, Decimal],
+    correlation_id: str,
+) -> object:
+    return agent.run(
+        RiskInput(
             proposal=proposal,
             portfolio=portfolio,
             prices=prices,
             correlation_id=correlation_id,
         )
-        risk_result = agent.run(inp)
-
-        # HITL path: use LangGraph interrupt so the checkpointer can persist
-        # state before the node yields to a human reviewer.
-        if isinstance(risk_result, AgentHITLRequired):
-            # Pre-build the ApprovedTrade so idempotency_key/UUID are stable
-            # across the interrupt boundary.  The serialised form is passed to
-            # the interrupt payload so the resume handler can reconstruct it.
-            # research_plan is included so the Telegram card can show human-
-            # readable rationale / pros / cons rather than a raw machine string.
-            pending_approved = _build_approved_from_hitl(risk_result, correlation_id)
-            interrupt(
-                {
-                    "type": "hitl_request",
-                    "trade_proposal": proposal_raw,
-                    "research_plan": state.get("research_plan"),
-                    "approved_trade": pending_approved.model_dump(mode="json"),
-                }
-            )
-            # Re-entry after resume: hitl_status is in state via Command(update=...).
-            hitl_status = state.get("hitl_status")
-            _record_hitl_decision(ports, hitl_status, pending_approved, risk_result)
-            return _route_hitl(hitl_status, pending_approved)
-
-        return _map_risk_result(risk_result, proposal_raw)
-
-    return risk_node
+    )
 
 
-def _map_risk_result(risk_result: object, proposal_raw: dict[str, Any]) -> dict[str, Any]:
-    """Convert a RiskAgent result to a graph-state update dict.
+def _should_pause(hitl_mode: str, risk_result: object) -> bool:
+    """Decide whether the risk node pauses for human approval.
 
-    HITLRequired is handled before this function is called (via interrupt()).
-    When the trade is approved we serialise the full ``ApprovedTrade`` (including
-    the risk-checked ``Trade`` object with its idempotency_key and UUID) so that
-    the execution node can rehydrate it directly without constructing a new Trade.
+    ``always``    — pause on every cycle (buy / sell / hold).
+    ``threshold`` — pause only when RiskPolicy flagged the trade as HITLRequired
+                    (notional above the HITL threshold); smaller trades and holds
+                    auto-approve as before.
     """
-    from firm.agents.risk import Rejected
+    if hitl_mode == "threshold":
+        return isinstance(risk_result, AgentHITLRequired)
+    return True
 
+
+def _recommended_approved(
+    risk_result: object,
+    proposal: Any,
+    correlation_id: str,
+) -> ApprovedTrade | None:
+    """Pre-build the ApprovedTrade for the recommended action, or None for a hold.
+
+    For an approved or HITL-flagged TradeProposal the trade is built once here
+    so the same Trade object is executed whether the human approves immediately
+    or after a delay.
+    """
     if isinstance(risk_result, ApprovedTrade):
-        return {"approved_trade": risk_result.model_dump(mode="json")}
-    if isinstance(risk_result, Rejected):
-        return {"cycle_outcome": CycleOutcome.REJECTED}
+        return risk_result
+    if isinstance(risk_result, AgentHITLRequired):
+        return _build_approved_from_hitl(risk_result, correlation_id)
+    return None
+
+
+def _hitl_payload(
+    proposal_raw: dict[str, Any],
+    research_plan: dict[str, Any] | None,
+    recommended: ApprovedTrade | None,
+) -> dict[str, Any]:
+    """Build the interrupt payload the channel renders into an approval card.
+
+    Carries the recommendation/conviction/rationale/bull/bear (via research_plan)
+    and the proposed (recommended) trade so the operator can render the card and
+    the alternative override options.
+    """
     return {
-        "cycle_outcome": CycleOutcome.ERROR,
-        "error": f"unexpected risk result: {risk_result!r}",
+        "type": "hitl_request",
+        "trade_proposal": proposal_raw,
+        "research_plan": research_plan,
+        "approved_trade": recommended.model_dump(mode="json") if recommended else None,
     }
 
 
-def _record_hitl_decision(
+def _auto_outcome(recommended: ApprovedTrade | None) -> dict[str, Any]:
+    """Outcome when no human approval is required (threshold mode, below threshold)."""
+    if recommended is not None:
+        return {"approved_trade": recommended.model_dump(mode="json")}
+    return {"cycle_outcome": CycleOutcome.HOLD}
+
+
+def _resume_for_decision(
     ports: NodePorts,
-    hitl_status: str | None,
-    pending_approved: ApprovedTrade,
-    hitl_required: AgentHITLRequired,
+    state: GraphState,
+    decision: HITLDecision,
+    recommended: ApprovedTrade | None,
+    correlation_id: str,
+) -> dict[str, Any]:
+    """Route the resumed cycle according to the human's structured decision.
+
+    approve        → execute the recommended action (or hold when none recommended).
+    override:buy   → size a buy now and execute.
+    override:sell  → sell the existing position for the symbol (no-op if none).
+    override:hold  → no trade.
+    expire         → fail-safe rejection (rejected_timeout).
+    """
+    if decision is HITLDecision.EXPIRE:
+        _log_hitl(ports, HITLStatus.EXPIRED, decision, correlation_id)
+        return {"cycle_outcome": CycleOutcome.REJECTED_TIMEOUT, "hitl_decision": decision.value}
+
+    if decision is HITLDecision.APPROVE:
+        chosen = recommended
+    elif decision is HITLDecision.OVERRIDE_BUY:
+        chosen = _override_buy(ports, state, correlation_id)
+    elif decision is HITLDecision.OVERRIDE_SELL:
+        chosen = _override_sell(ports, state, correlation_id)
+    else:  # OVERRIDE_HOLD
+        chosen = None
+
+    if chosen is None:
+        _log_hitl(ports, HITLStatus.APPROVED, decision, correlation_id)
+        # An override-hold (or any decision that resolves to no trade) supersedes
+        # the desk's proposal: rewrite trade_proposal to a Hold so the downstream
+        # synthesis / judge / reporting nodes describe the executed action, not the
+        # stale recommendation they would otherwise read from pm_node.
+        return {
+            "cycle_outcome": CycleOutcome.HOLD,
+            "hitl_decision": decision.value,
+            "trade_proposal": _override_hold_proposal(state, decision),
+        }
+    # An approved or overridden trade supersedes the desk's original proposal.
+    # Rewrite trade_proposal so synthesis / judge read the ACTUAL executed action
+    # (an override-buy must not yield a "Hold / no position change" memo).
+    return {
+        "approved_trade": chosen.model_dump(mode="json"),
+        "hitl_decision": decision.value,
+        "trade_proposal": _proposal_from_approved(chosen, decision),
+    }
+
+
+def _proposal_from_approved(
+    approved: ApprovedTrade,
+    decision: HITLDecision,
+) -> dict[str, Any]:
+    """Build a trade_proposal dict mirroring the executed trade.
+
+    Downstream synthesis / judge / reporting read ``trade_proposal`` from state;
+    rewriting it here keeps those nodes consistent with the action that actually
+    filled — especially on an override, where the original proposal was a Hold or
+    a different side from what the human chose.
+    """
+    trade = approved.trade
+    rationale = (
+        f"hitl_override:{trade.side}" if decision.is_override else f"hitl_approved:{trade.side}"
+    )
+    proposal = TradeProposal(
+        symbol=trade.symbol,
+        side=TradeSide(trade.side),
+        qty=trade.qty,
+        notional=trade.qty * trade.requested_price,
+        rationale=rationale,
+    )
+    return proposal.model_dump(mode="json")
+
+
+def _override_hold_proposal(state: GraphState, decision: HITLDecision) -> dict[str, Any]:
+    """Build a Hold trade_proposal reflecting an override-to-hold decision.
+
+    Supersedes whatever the desk proposed so the memo / judge report a hold the
+    human chose, not the original buy/sell recommendation.
+    """
+    symbol = state.get("symbol", "")
+    reason = (
+        "operator overrode the desk to hold — no position change"
+        if decision.is_override
+        else "no trade executed"
+    )
+    return Hold(symbol=symbol, reason=reason).model_dump(mode="json")
+
+
+def _log_hitl(
+    ports: NodePorts,
+    status: str,
+    decision: HITLDecision,
+    correlation_id: str,
 ) -> None:
-    """Durably record a HITL decision before routing.
+    """Log a no-trade HITL decision; the cycle-outcome record is the durable audit.
 
-    For the approved path, the ApprovalRow is deferred to execution_node so
-    the FK constraint on approvals.trade_id is satisfied (the trade row must
-    exist first).  For rejected/expired paths, no TradeRow will be created, so
-    we write only a warning log — the cycle-outcome audit written by
-    ``record_cycle`` already captures the rejection durably.
-
-    Failures are caught and logged — a recording error must never abort the
-    decision path.
+    Approved-with-fill paths defer their ApprovalRow to execution_node (so the
+    trades FK is satisfied); held / expired paths produce no TradeRow, so only a
+    log line is written here.
     """
     if ports.ledger is None:
         return
-    if hitl_status == HITLStatus.APPROVED:
-        # Approved path: trade hasn't been written yet — defer to execution_node,
-        # which calls _record_approval_after_fill_from_state() after ledger.buy().
-        return
-    # Rejected / expired: no trade row will be created.  Log the decision; the
-    # cycle-outcome record (written by the reporting_node via record_cycle) is the
-    # durable audit trail.
     logger.info(
-        "HITL decision recorded: status=%s correlation_id=%s (not executed)",
-        hitl_status,
-        pending_approved.correlation_id,
+        "HITL decision: status=%s decision=%s correlation_id=%s (no trade executed)",
+        status,
+        decision.value,
+        correlation_id,
     )
 
 
@@ -318,6 +443,10 @@ def _record_approval_after_fill_from_state(
     proposal_raw = state.get("trade_proposal") or {}
     original_notional = Decimal(str(proposal_raw.get("notional", "0")))
     original_qty = Decimal(str(proposal_raw.get("qty", "0")))
+    # Capture approve vs override (+ which action) in the audit identity so the
+    # decision trail records exactly what the human chose.
+    decision = state.get("hitl_decision") or HITLDecision.APPROVE.value
+    decided_by = f"risk_committee:{decision}"
     try:
         ports.ledger.record_approval(
             correlation_id=uuid.UUID(approved.correlation_id),
@@ -326,6 +455,7 @@ def _record_approval_after_fill_from_state(
             original_notional=original_notional,
             original_qty=original_qty,
             decided_at=datetime.now(UTC),
+            decided_by=decided_by,
         )
     except Exception:
         logger.exception(
@@ -334,32 +464,100 @@ def _record_approval_after_fill_from_state(
         )
 
 
-def _route_hitl(hitl_status: str | None, pending_approved: ApprovedTrade) -> dict[str, Any]:
-    """Map hitl_status to graph state after HITL resume.
+def _override_buy(
+    ports: NodePorts,
+    state: GraphState,
+    correlation_id: str,
+) -> ApprovedTrade | None:
+    """Size a buy now for the cycle's symbol and return it as an ApprovedTrade.
 
-    *pending_approved* is the ``ApprovedTrade`` built before the interrupt so
-    that the same Trade object (same UUID + idempotency_key) is used whether
-    the human approves immediately or after a delay.
+    Uses the research_plan conviction when present (else a 0.5 default), capped
+    by the per-trade RiskPolicy limit via ``size_position``.  Returns None when
+    no market price is available or the sized quantity is below one share.
     """
-    if hitl_status == HITLStatus.REJECTED:
-        return {"cycle_outcome": CycleOutcome.REJECTED}
-    if hitl_status == HITLStatus.EXPIRED:
-        return {"cycle_outcome": CycleOutcome.REJECTED_TIMEOUT}
-    if hitl_status == HITLStatus.APPROVED:
-        return {"approved_trade": pending_approved.model_dump(mode="json")}
-    return {
-        "cycle_outcome": CycleOutcome.ERROR,
-        "error": f"unexpected hitl_status after resume: {hitl_status!r}",
-    }
+    symbol = state.get("symbol", "")
+    decision_ts = _parse_datetime(state.get("decision_ts", ""))
+    bar = ports.market_data.get_bar(symbol, decision_ts)
+    if bar is None or bar.close <= Decimal("0"):
+        logger.info("override:buy — no market price for %s; treating as hold", symbol)
+        return None
+
+    conviction = _conviction_from_plan(state.get("research_plan"))
+    nav = _portfolio_nav(ports.portfolio, {symbol: bar.close})
+    qty = size_position(
+        recommendation=Recommendation.BUY,
+        conviction=conviction,
+        nav=nav,
+        price=bar.close,
+        max_trade_notional_pct=ports.risk_policy.max_trade_notional_pct,
+    )
+    if qty < Decimal("1"):
+        logger.info("override:buy — sized below one share for %s; treating as hold", symbol)
+        return None
+    return _approved_trade(symbol, TradeSide.BUY, qty, bar.close, correlation_id)
 
 
-def _hitl_exceeds_threshold(notional: Decimal, threshold: Decimal) -> bool:
-    """Return True when *notional* strictly exceeds the HITL *threshold*.
+def _override_sell(
+    ports: NodePorts,
+    state: GraphState,
+    correlation_id: str,
+) -> ApprovedTrade | None:
+    """Sell the entire existing position for the cycle's symbol.
 
-    The boundary is strictly-above (``>``): a notional equal to the threshold
-    does **not** trigger HITL.
+    Returns None (→ held) when no holding exists for the symbol.
     """
-    return notional > threshold
+    symbol = state.get("symbol", "")
+    holding = ports.portfolio.holdings.get(symbol)
+    if holding is None or holding.quantity < Decimal("1"):
+        logger.info("override:sell — no position in %s; treating as hold", symbol)
+        return None
+
+    decision_ts = _parse_datetime(state.get("decision_ts", ""))
+    bar = ports.market_data.get_bar(symbol, decision_ts)
+    price = bar.close if bar is not None and bar.close > Decimal("0") else holding.avg_cost
+    return _approved_trade(symbol, TradeSide.SELL, holding.quantity, price, correlation_id)
+
+
+def _approved_trade(
+    symbol: str,
+    side: TradeSide,
+    qty: Decimal,
+    price: Decimal,
+    correlation_id: str,
+) -> ApprovedTrade:
+    """Build an ApprovedTrade for an override action via the RiskAgent helper."""
+    from firm.agents.risk import _build_trade_stub
+
+    proposal = TradeProposal(
+        symbol=symbol,
+        side=side,
+        qty=qty,
+        notional=qty * price,
+        rationale=f"hitl_override:{side}",
+    )
+    trade = _build_trade_stub(proposal, {symbol: price}, correlation_id)
+    return ApprovedTrade(trade=trade, correlation_id=correlation_id)
+
+
+def _conviction_from_plan(research_plan: dict[str, Any] | None) -> float:
+    """Return the research_plan conviction in [0, 1], defaulting to 0.5."""
+    if not research_plan:
+        return 0.5
+    raw = research_plan.get("conviction")
+    if raw is None:
+        return 0.5
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def _portfolio_nav(portfolio: Portfolio, prices: dict[str, Decimal]) -> Decimal:
+    """Compute NAV, supplying avg_cost fallbacks for any held symbol missing a price."""
+    full = dict(prices)
+    for sym, holding in portfolio.holdings.items():
+        full.setdefault(sym, holding.avg_cost)
+    return portfolio.nav(full)
 
 
 def _build_approved_from_hitl(

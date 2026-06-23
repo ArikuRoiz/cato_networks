@@ -129,27 +129,17 @@ def resume_approval(
 
     Returns the resolved cycle outcome from the final graph state.
     """
-    from langgraph.types import Command
+    from firm.orchestration.hitl import HITLDecision, resume_decision
 
-    hitl_status = _decision_to_hitl_status(decision, edited_qty)
-    resume_value = _build_resume_value(decision, edited_qty)
-
-    config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
-    resume_cmd: Any = Command(
-        resume=resume_value,
-        update={"hitl_status": hitl_status},
-    )
-
-    final_state: dict[str, Any] = {}
-    for event in live_graph.graph.stream(resume_cmd, config=config, stream_mode="values"):
-        final_state = event
+    hitl_decision = _decision_to_hitl_decision(decision)
+    final_state = resume_decision(live_graph.graph, thread_id, hitl_decision)
 
     # Remove from registry now that the thread has been resolved.
     _unregister_pending_run(live_graph, thread_id)
 
     return {
         "thread_id": thread_id,
-        "hitl_status": hitl_status,
+        "hitl_status": HITLDecision(hitl_decision).hitl_status,
         "outcome": final_state.get("cycle_outcome", "unknown"),
     }
 
@@ -396,20 +386,19 @@ def _unregister_pending_run(live_graph: LiveGraph, thread_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _decision_to_hitl_status(decision: str, edited_qty: Decimal | None) -> str:
-    from firm.domain.enums import HITLStatus
+def _decision_to_hitl_decision(decision: str) -> str:
+    """Map the web request decision to a structured HITLDecision value.
+
+    ``approve`` executes the recommended action; ``reject`` becomes an explicit
+    hold override (no trade) under the always-pause model.  The richer override
+    actions (override:buy/sell) are exposed by the resume_decision interface and
+    will be surfaced in the dashboard in a follow-up.
+    """
+    from firm.orchestration.hitl import HITLDecision
 
     if decision == "approve":
-        return HITLStatus.APPROVED
-    return HITLStatus.REJECTED
-
-
-def _build_resume_value(decision: str, edited_qty: Decimal | None) -> str:
-    if decision == "approve" and edited_qty is not None:
-        return f"edit:{edited_qty}"
-    if decision == "approve":
-        return "approved"
-    return "rejected"
+        return HITLDecision.APPROVE.value
+    return HITLDecision.OVERRIDE_HOLD.value
 
 
 # ---------------------------------------------------------------------------

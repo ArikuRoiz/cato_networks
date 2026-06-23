@@ -5,10 +5,12 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, field_validator, model_validator
+
+HITLMode = Literal["always", "threshold"]
 
 # ---------------------------------------------------------------------------
 # Project-root anchor (robust regardless of caller's cwd)
@@ -65,6 +67,14 @@ class RiskPolicyConfig(BaseModel, frozen=True):
     max_name_concentration_pct: float
     daily_loss_halt_pct: float
     hitl_threshold_pct: float
+
+    # HITL approval policy.
+    #   "always"    — every cycle pauses for human approval (buy/sell/hold).
+    #   "threshold" — only proposals whose notional exceeds hitl_threshold_pct
+    #                 of NAV pause; smaller trades auto-approve (legacy behaviour).
+    # The RiskPolicy hard limits (per-trade, concentration, daily halt) are
+    # enforced at the execution guardrail regardless of this mode.
+    hitl_mode: HITLMode = "always"
 
     # Signal thresholds
     buy_threshold: float
@@ -159,6 +169,7 @@ def load_risk_policy(
         max_name_concentration_pct=float(raw["max_name_concentration_pct"]),
         daily_loss_halt_pct=float(raw["daily_loss_halt_pct"]),
         hitl_threshold_pct=float(raw["hitl_threshold_pct"]),
+        hitl_mode=raw.get("hitl_mode", "always"),
         buy_threshold=float(raw["buy_threshold"]),
         sell_threshold=float(raw["sell_threshold"]),
         momentum_weight=float(raw["momentum_weight"]),

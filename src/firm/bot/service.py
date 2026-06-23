@@ -58,6 +58,7 @@ from firm.bot.schemas import (
     parse_text_message,
 )
 from firm.domain.enums import HITLStatus
+from firm.orchestration.hitl import HITLDecision, parse_decision
 from firm.ports.types import HITLRequest
 
 logger = logging.getLogger(__name__)
@@ -167,7 +168,13 @@ class BotService:
             if not ticker:
                 self._send_text(msg.chat_id, "Usage: /run TICKER  (e.g. /run NVDA)")
                 return
-            self._start_run(ticker, msg.chat_id)
+            self._start_run(ticker, msg.chat_id, force_buy=msg.is_force)
+        elif cmd == "demo":
+            ticker = msg.arg or ""
+            if not ticker:
+                self._send_text(msg.chat_id, "Usage: /demo TICKER  (e.g. /demo NVDA)")
+                return
+            self._start_run(ticker, msg.chat_id, force_buy=True)
         elif cmd in {"start", "help"}:
             self._send_help(msg.chat_id)
         elif cmd == "portfolio":
@@ -184,30 +191,50 @@ class BotService:
                 tap.callback_query_id, "No matching run found — may have expired."
             )
             return
-        _run, signal = entry
-        hitl_status, resume_value = _map_tap_to_decision(tap)
-        signal.resume_value = resume_value
-        signal.hitl_status = hitl_status
+        run, signal = entry
+
+        # Reject is NOT a terminal decision: it does not wake the run thread.
+        # Instead it offers the OTHER actions; the run keeps waiting on the
+        # event until one of those alternatives is tapped.
+        if tap.is_reject:
+            self._offer_alternatives(tap, run)
+            return
+
+        decision = _decision_for(tap, run.recommendation)
+        signal.resume_value = decision.value
+        signal.hitl_status = decision.hitl_status
         signal.event.set()
         actor = tap.from_username or "operator"
-        ack = "✅ Approved" if tap.is_approve else "❌ Rejected"
-        self._answer_callback(tap.callback_query_id, f"{ack} by {actor}")
+        self._answer_callback(tap.callback_query_id, f"{_ack_verb(decision)} by {actor}")
+
+    def _offer_alternatives(self, tap: _CallbackTap, run: _PendingRun) -> None:
+        """Reject tap → send a follow-up keyboard with the other actions."""
+        self._answer_callback(tap.callback_query_id, "Rejected — pick another action.")
+        keyboard = _alternatives_keyboard(run.recommendation, run.correlation_id)
+        self._send_message_with_keyboard(
+            tap.chat_id,
+            f"❌ *Rejected {run.recommendation.upper()} for {run.symbol}.* "
+            "Choose an alternative action:",
+            keyboard,
+        )
 
     # ------------------------------------------------------------------
     # Run lifecycle
     # ------------------------------------------------------------------
 
-    def _start_run(self, ticker: str, chat_id: int) -> None:
-        self._send_text(chat_id, f"🔎 Researching {ticker}…")
+    def _start_run(self, ticker: str, chat_id: int, force_buy: bool = False) -> None:
+        prefix = "🎬 Demo run (forced trade) for" if force_buy else "🔎 Researching"
+        self._send_text(chat_id, f"{prefix} {ticker}…")
         thread = threading.Thread(
             target=self._run_pipeline,
             args=(ticker, chat_id),
+            kwargs={"force_buy": force_buy},
             daemon=True,
             name=f"pipeline-{ticker}",
         )
         thread.start()
 
-    def _run_pipeline(self, symbol: str, chat_id: int) -> None:
+    def _run_pipeline(self, symbol: str, chat_id: int, force_buy: bool = False) -> None:
         """Execute the graph in a background thread; handle HITL pause if it occurs."""
         correlation_id = str(uuid.uuid4())
         thread_id = str(uuid.uuid4())
@@ -216,6 +243,7 @@ class BotService:
             "symbol": symbol,
             "decision_ts": datetime.now(tz=UTC).isoformat(),
             "correlation_id": correlation_id,
+            "force_buy": force_buy,
         }
         try:
             final_state = self._stream_to_interrupt(initial_state, config)
@@ -235,8 +263,11 @@ class BotService:
                 )
                 return
 
-            final_state = self._resume_graph(config, signal)
-            self._send_decision_report(chat_id, symbol, signal.hitl_status, final_state)
+            recommendation = self._pending_recommendation(correlation_id)
+            final_state = self._resume_graph(thread_id, signal)
+            self._send_decision_report(
+                chat_id, symbol, signal.hitl_status, final_state, recommendation
+            )
             self._send_cycle_report(chat_id, symbol, final_state)
 
         except Exception:
@@ -287,6 +318,7 @@ class BotService:
             thread_id=thread_id,
             chat_id=chat_id,
             symbol=symbol,
+            recommendation=_normalize_recommendation(req.recommendation, req.side),
         )
         signal = _ResumeSignal()
         with self._lock:
@@ -305,20 +337,19 @@ class BotService:
 
     def _resume_graph(
         self,
-        config: dict[str, Any],
+        thread_id: str,
         signal: _ResumeSignal,
     ) -> dict[str, Any]:
-        """Resume the interrupted graph and stream to completion."""
-        from langgraph.types import Command
+        """Resume the interrupted graph via the shared HITL entry point."""
+        from firm.orchestration.hitl import resume_decision
 
-        resume_cmd: Any = Command(
-            resume=signal.resume_value,
-            update={"hitl_status": signal.hitl_status},
-        )
-        final_state: dict[str, Any] = {}
-        for event in self._graph.stream(resume_cmd, config=config, stream_mode="values"):
-            final_state = event
-        return final_state
+        return resume_decision(self._graph, thread_id, signal.resume_value)
+
+    def _pending_recommendation(self, correlation_id: str) -> str | None:
+        """Return the desk's recommendation for the pending run, if still registered."""
+        with self._lock:
+            entry = self._pending.get(correlation_id)
+        return entry[0].recommendation if entry is not None else None
 
     def _send_decision_report(
         self,
@@ -326,8 +357,14 @@ class BotService:
         symbol: str,
         hitl_status: str,
         final_state: dict[str, Any],
+        recommendation: str | None = None,
     ) -> None:
-        """Send the 'what I did & why' follow-up after approve/reject."""
+        """Send the 'what I did & why' follow-up after approve/reject/override.
+
+        ``hitl_decision`` (threaded through graph state by the risk node) tells the
+        formatter whether this was a plain approve or an override-buy/sell/hold, so
+        the label matches the action that actually executed.
+        """
         report = format_decision_report(
             symbol=symbol,
             hitl_status=hitl_status,
@@ -336,6 +373,8 @@ class BotService:
             verdict=final_state.get("verdict"),
             approved_trade=final_state.get("approved_trade"),
             rejection_reason=_extract_rejection_reason(hitl_status, final_state),
+            hitl_decision=final_state.get("hitl_decision"),
+            recommendation=recommendation,
         )
         self._send_text(chat_id, report)
 
@@ -391,6 +430,8 @@ class BotService:
             "🤖 *AI Investment Firm Bot*\n\n"
             "Commands:\n"
             "  /run TICKER — research a stock and ask for trade approval\n"
+            "  /run TICKER force — force a high-conviction BUY so the approval card always appears (demo)\n"
+            "  /demo TICKER — same as /run TICKER force\n"
             "  /portfolio  — show current NAV, cash, and holdings\n"
             "  /help       — show this message\n\n"
             "You can also send a bare ticker: just type *NVDA*"
@@ -460,11 +501,47 @@ class BotService:
 # ---------------------------------------------------------------------------
 
 
-def _map_tap_to_decision(tap: _CallbackTap) -> tuple[str, str]:
-    """Return (hitl_status, resume_value) for a callback tap."""
+# Recommendation verb → its two alternative action verbs (label, callback verb).
+_ALTERNATIVES: dict[str, list[str]] = {
+    "buy": ["hold", "sell"],
+    "hold": ["buy", "sell"],
+    "sell": ["buy", "hold"],
+}
+_ACTION_EMOJI: dict[str, str] = {"buy": "🟢", "sell": "🔴", "hold": "⏸️"}
+
+
+def _decision_for(tap: _CallbackTap, recommendation: str) -> HITLDecision:
+    """Resolve a callback tap to a structured HITL decision.
+
+    Approve → accept the recommended action; an 'act' tap → the chosen verb.
+    """
     if tap.is_approve:
-        return (HITLStatus.APPROVED, "approved")
-    return (HITLStatus.REJECTED, "rejected")
+        return HITLDecision.APPROVE
+    return parse_decision(tap.verb or recommendation)
+
+
+def _ack_verb(decision: HITLDecision) -> str:
+    """Short Telegram toast label for a resolved decision."""
+    labels = {
+        HITLDecision.APPROVE: "✅ Approved",
+        HITLDecision.OVERRIDE_BUY: "🟢 Buy",
+        HITLDecision.OVERRIDE_SELL: "🔴 Sell",
+        HITLDecision.OVERRIDE_HOLD: "⏸️ Hold",
+    }
+    return labels.get(decision, "Decided")
+
+
+def _normalize_recommendation(recommendation: str | None, side: str) -> str:
+    """Coerce the research recommendation to a buy/sell/hold verb.
+
+    Falls back to the trade *side* (the proposal is what risk sized), then buy.
+    """
+    candidate = (recommendation or side or "buy").strip().lower()
+    if "sell" in candidate or "reduce" in candidate or "trim" in candidate:
+        return "sell"
+    if "hold" in candidate or "neutral" in candidate:
+        return "hold"
+    return "buy"
 
 
 def _approval_keyboard(correlation_id: str) -> list[list[dict[str, str]]]:
@@ -473,6 +550,23 @@ def _approval_keyboard(correlation_id: str) -> list[list[dict[str, str]]]:
             {"text": "✅ Approve", "callback_data": f"approve:{correlation_id}"},
             {"text": "❌ Reject", "callback_data": f"reject:{correlation_id}"},
         ],
+    ]
+
+
+def _alternatives_keyboard(recommendation: str, correlation_id: str) -> list[list[dict[str, str]]]:
+    """Buttons for the OTHER actions after a Reject tap.
+
+    callback_data is ``act:<verb>:<cid>`` — verb is fed to ``resume_decision``.
+    """
+    verbs = _ALTERNATIVES.get(recommendation, _ALTERNATIVES["buy"])
+    return [
+        [
+            {
+                "text": f"{_ACTION_EMOJI.get(verb, '')} {verb.title()}",
+                "callback_data": f"act:{verb}:{correlation_id}",
+            }
+            for verb in verbs
+        ]
     ]
 
 

@@ -123,61 +123,49 @@ class TestParseTickers:
 
 
 class TestParseHitlResponse:
-    def test_approve_short(self) -> None:
-        from firm.domain.enums import HITLStatus
+    """The console parser maps a raw key to a structured HITLDecision.
 
-        resume, status = _parse_hitl_response("a")
-        assert resume == "approved"
-        assert status == HITLStatus.APPROVED
+    Under the every-cycle HITL model the operator picks the ACTION to take:
+    approve the recommendation, or override with buy / sell / hold.  Unknown
+    or empty input fails safe to an explicit hold override (no trade).
+    """
+
+    def test_approve_short(self) -> None:
+        from firm.orchestration.hitl import HITLDecision
+
+        assert _parse_hitl_response("a") is HITLDecision.APPROVE
 
     def test_approve_full(self) -> None:
-        from firm.domain.enums import HITLStatus
+        from firm.orchestration.hitl import HITLDecision
 
-        resume, status = _parse_hitl_response("approve")
-        assert resume == "approved"
-        assert status == HITLStatus.APPROVED
+        assert _parse_hitl_response("approve") is HITLDecision.APPROVE
 
-    def test_reject_short(self) -> None:
-        from firm.domain.enums import HITLStatus
+    def test_buy_override(self) -> None:
+        from firm.orchestration.hitl import HITLDecision
 
-        resume, status = _parse_hitl_response("r")
-        assert resume == "rejected"
-        assert status == HITLStatus.REJECTED
+        assert _parse_hitl_response("b") is HITLDecision.OVERRIDE_BUY
+        assert _parse_hitl_response("buy") is HITLDecision.OVERRIDE_BUY
 
-    def test_reject_full(self) -> None:
-        from firm.domain.enums import HITLStatus
+    def test_sell_override(self) -> None:
+        from firm.orchestration.hitl import HITLDecision
 
-        resume, status = _parse_hitl_response("reject")
-        assert resume == "rejected"
-        assert status == HITLStatus.REJECTED
+        assert _parse_hitl_response("s") is HITLDecision.OVERRIDE_SELL
+        assert _parse_hitl_response("sell") is HITLDecision.OVERRIDE_SELL
 
-    def test_edit_with_integer_qty(self) -> None:
-        from firm.domain.enums import HITLStatus
+    def test_hold_override(self) -> None:
+        from firm.orchestration.hitl import HITLDecision
 
-        resume, status = _parse_hitl_response("e 50")
-        assert resume == "edit:50"
-        assert status == HITLStatus.APPROVED
+        assert _parse_hitl_response("hold") is HITLDecision.OVERRIDE_HOLD
 
-    def test_edit_with_decimal_qty(self) -> None:
-        from firm.domain.enums import HITLStatus
+    def test_unknown_input_defaults_to_hold(self) -> None:
+        from firm.orchestration.hitl import HITLDecision
 
-        resume, status = _parse_hitl_response("edit 12.5")
-        assert resume == "edit:12.5"
-        assert status == HITLStatus.APPROVED
+        assert _parse_hitl_response("maybe") is HITLDecision.OVERRIDE_HOLD
 
-    def test_unknown_input_defaults_to_reject(self) -> None:
-        from firm.domain.enums import HITLStatus
+    def test_empty_string_defaults_to_hold(self) -> None:
+        from firm.orchestration.hitl import HITLDecision
 
-        resume, status = _parse_hitl_response("maybe")
-        assert resume == "rejected"
-        assert status == HITLStatus.REJECTED
-
-    def test_empty_string_defaults_to_reject(self) -> None:
-        from firm.domain.enums import HITLStatus
-
-        resume, status = _parse_hitl_response("")
-        assert resume == "rejected"
-        assert status == HITLStatus.REJECTED
+        assert _parse_hitl_response("") is HITLDecision.OVERRIDE_HOLD
 
 
 # ---------------------------------------------------------------------------

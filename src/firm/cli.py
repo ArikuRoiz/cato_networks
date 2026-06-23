@@ -800,9 +800,8 @@ def _invoke_live_symbol(
     """
     import uuid
 
-    from langgraph.types import Command
-
     from firm.observability.tracing import reset_correlation_id, set_correlation_id
+    from firm.orchestration.hitl import resume_decision
 
     correlation_id = str(uuid.uuid4())
     thread_id = str(uuid.uuid4())
@@ -845,16 +844,10 @@ def _invoke_live_symbol(
             if not interrupted:
                 break
 
-            # Route to the configured HITL surface.
-            resume_value, hitl_status = _resolve_hitl_decision(
-                symbol, interrupt_payload, correlation_id, hitl_sink
-            )
-            resume_cmd: Any = Command(
-                resume=resume_value,
-                update={"hitl_status": hitl_status},
-            )
-            for event in graph.stream(resume_cmd, config=config, stream_mode="values"):
-                final_state = event
+            # Route to the configured HITL surface to obtain a structured decision,
+            # then resume via the shared resume_decision interface.
+            decision = _resolve_hitl_decision(symbol, interrupt_payload, correlation_id, hitl_sink)
+            final_state = resume_decision(graph, thread_id, decision)
             break  # single HITL per cycle
 
         _emit_cycle_done(symbol, correlation_id, final_state)
@@ -876,8 +869,8 @@ def _resolve_hitl_decision(
     interrupt_payload: dict[str, Any],
     correlation_id: str,
     hitl_sink: Any,
-) -> tuple[str, str]:
-    """Route the HITL decision to Telegram or console; return (resume_value, hitl_status)."""
+) -> Any:
+    """Route the HITL decision to Telegram or console; return a HITLDecision."""
     from firm.adapters.telegram import TelegramHITL
 
     if isinstance(hitl_sink, TelegramHITL):
@@ -889,13 +882,19 @@ def _telegram_hitl_decision(
     interrupt_payload: dict[str, Any],
     correlation_id: str,
     hitl_sink: Any,
-) -> tuple[str, str]:
-    """Build a HITLRequest from the interrupt payload and block on Telegram approval."""
+) -> Any:
+    """Build a HITLRequest from the interrupt payload and block on Telegram approval.
+
+    Returns a HITLDecision. The two-step Telegram override UI (approve / reject →
+    buy|sell|hold) is a separate follow-up ticket; here a Telegram approve maps to
+    APPROVE, reject maps to OVERRIDE_HOLD, and timeout maps to EXPIRE.
+    """
     import uuid
     from datetime import timedelta
     from decimal import Decimal
 
     from firm.domain.enums import HITLStatus
+    from firm.orchestration.hitl import HITLDecision
     from firm.ports.types import HITLRequest
 
     proposal = interrupt_payload.get("trade_proposal") or {}
@@ -929,54 +928,60 @@ def _telegram_hitl_decision(
         }
     )
     if result.status == HITLStatus.APPROVED:
-        return ("approved", HITLStatus.APPROVED)
+        return HITLDecision.APPROVE
     if result.status == HITLStatus.REJECTED:
-        return ("rejected", HITLStatus.REJECTED)
-    # EXPIRED or any other status → fail-safe rejection
-    return ("rejected", HITLStatus.EXPIRED)
+        return HITLDecision.OVERRIDE_HOLD
+    # EXPIRED or any other status → fail-safe timeout rejection
+    return HITLDecision.EXPIRE
 
 
 def _console_hitl_prompt(
     symbol: str,
     payload: dict[str, Any],
-) -> tuple[str, str]:
-    """Block on console input for a HITL decision; return (resume_value, hitl_status).
+) -> Any:
+    """Block on console input for a HITL decision; return a HITLDecision.
 
-    Accepted responses: approve / a, reject / r, edit <qty> / e <qty>.
-    Any unrecognised input defaults to rejection for safety.
+    Every cycle pauses for the operator, who decides the action directly:
+
+        [a]pprove — execute the recommended action (buy/sell as sized; hold = no trade)
+        [b]uy     — override: size and buy now
+        [s]ell    — override: sell the existing holding (no-op if none)
+        [h]old    — override: no trade
+
+    Any unrecognised input defaults to a hold override for safety.
     """
-
     proposal = payload.get("trade_proposal", {})
+    research_plan = payload.get("research_plan") or {}
+    recommendation = research_plan.get("recommendation", "?")
     print(
-        f"\n[HITL] Trade requires human approval for {symbol}\n"
-        f"  Proposal: {proposal}\n"
-        "  Options: [a]pprove  [r]eject  [e]dit <qty>",
+        f"\n[HITL] Decision required for {symbol} (every cycle pauses)\n"
+        f"  Recommendation: {recommendation}\n"
+        f"  Proposed trade: {proposal}\n"
+        "  Options: [a]pprove  [b]uy  [s]ell  [h]old",
         flush=True,
     )
     try:
-        raw = input("Decision > ").strip().lower()
+        raw = input("Decision (a/b/s/h) > ").strip().lower()
     except (EOFError, KeyboardInterrupt):
-        raw = "r"
-
+        raw = "h"
     return _parse_hitl_response(raw)
 
 
-def _parse_hitl_response(raw: str) -> tuple[str, str]:
-    """Parse a raw HITL response string into (resume_value, hitl_status).
+def _parse_hitl_response(raw: str) -> Any:
+    """Parse a raw console response into a HITLDecision.
 
-    Defaults to rejection on any unrecognised input so that ambiguity is safe.
+    Defaults to an explicit hold override on unrecognised input so ambiguity is
+    safe (no trade) while still recording a human decision.
     """
-    from firm.domain.enums import HITLStatus
+    from firm.orchestration.hitl import HITLDecision
 
     if raw in {"a", "approve"}:
-        return ("approved", HITLStatus.APPROVED)
-    if raw in {"r", "reject"}:
-        return ("rejected", HITLStatus.REJECTED)
-    if raw.startswith(("e ", "edit ")):
-        qty_str = raw.split(maxsplit=1)[1] if " " in raw else ""
-        if qty_str.replace(".", "").isdigit():
-            return (f"edit:{qty_str}", HITLStatus.APPROVED)
-    return ("rejected", HITLStatus.REJECTED)
+        return HITLDecision.APPROVE
+    if raw in {"b", "buy"}:
+        return HITLDecision.OVERRIDE_BUY
+    if raw in {"s", "sell"}:
+        return HITLDecision.OVERRIDE_SELL
+    return HITLDecision.OVERRIDE_HOLD
 
 
 # ---------------------------------------------------------------------------
