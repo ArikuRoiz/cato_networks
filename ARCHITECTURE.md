@@ -1,8 +1,6 @@
 # The AI Investment Firm — Architecture
 
 > Runtime: **local Docker** · Cadence: **scheduled checkpoints + news-event triggers** · Watchlist: **~5–10 tickers**
->
-> **Target architecture; build tracked in `docs/REFACTOR_TICKETS.md`.**
 
 ---
 
@@ -35,52 +33,57 @@ A multi-agent paper-trading desk: agents research, debate, decide, size, and exe
 research + technical (parallel)
         → debate (bull ⇄ bear × N rounds)
         → Research Manager (decide direction + conviction)   [SOLE decider — LLM]
-        → size_position tool (deterministic sizing) + check_risk
-        → [RISK GUARDRAIL]
+        → pm (deterministic sizing via size_position tool)
+        → risk (RISK GUARDRAIL + HITL)
              ↓ > 5% NAV
              HITL interrupt → human approve / edit / reject   (RECORDED)
              ↓ approved
-        → Execution (atomic ledger write)
-        → Reporting agent (memo + Excel / Slack)
+        → Execution (atomic ledger write, NYSE calendar-gated)
+        → Reporting agent (Excel + Slack dispatch)
+        → Synthesis (LLM investment memo)
         → Judge (independent coherence audit, recorded)
         → END
 ```
 
-`research` and `technical` run **in parallel** from START. Both feed the `debate` node.
-`Research Manager` is the **sole** direction-decision agent; `size_position` converts its
-recommendation + conviction into a deterministic share quantity capped by `RiskPolicy`.
-The `RISK GUARDRAIL` re-validates before every ledger write — the LLM cannot skip it.
+`research` and `technical` run **in parallel** from START. Both feed the `debate_bull` node.
+`Research Manager` is the **sole** direction-decision agent; the deterministic `pm` node calls
+`size_position` to convert recommendation + conviction into a share quantity capped by `RiskPolicy`.
+The `risk` node re-validates before every ledger write — the LLM cannot skip it.
 
 ### Agent classification
 
 | Node | Pattern | LLM? |
 |---|---|---|
-| `research` | **Tool-using agent** — calls `search_news` (offline/online) and `fetch_live_news` (prod); grounds cited claims | haiku |
-| `technical` | **Tool-using agent** — calls `price_indicators`; produces structured bias signal | haiku |
-| `debater` | **LLM agent, two roles** — one `DebaterAgent` class runs bull ⇄ bear turns × N rounds | haiku |
+| `research` | **Tool-using agent** — calls `search_news` closure (inline in agent); grounds cited claims | haiku |
+| `technical` | **Tool-using agent** — calls `price_indicators` closure; produces structured bias signal | haiku |
+| `debate_bull` / `debate_bear` | **LLM agent, two roles** — one `DebaterAgent` class instantiated per stance; runs bull ⇄ bear turns × N rounds | haiku |
 | `research_manager` | **LLM agent — SOLE decider** — adjudicates debate; outputs direction (strong_buy … strong_sell) + conviction (0–1) | sonnet |
-| `size_position` | **Deterministic tool** — conviction × NAV → share qty; capped by `RiskPolicy` (≤ 10% NAV) | — |
-| `check_risk` | **Deterministic tool** — advisory wrapper around `RiskPolicy.check_trade` | — |
-| `risk_guardrail` | **Mandatory gate** — re-validates RiskPolicy before any ledger write; routes > 5% NAV to HITL; LLM cannot bypass | — |
-| `execution` | **Pure function** — atomic ledger commit (cash + FIFO lot + audit + idempotency key) | — |
-| `reporting` | **LLM agent** — writes investment memo; builds Excel + Slack report via `make_report` tool | sonnet |
+| `pm` | **Deterministic node** — calls `size_position` tool; conviction × NAV → share qty; capped by `RiskPolicy` (≤ 10% NAV) | — |
+| `risk` | **Mandatory gate** — wraps `RiskAgent`; re-validates RiskPolicy; routes > 5% NAV to HITL interrupt; LLM cannot bypass | — |
+| `execution` | **Pure function** — atomic ledger commit (cash + FIFO lot + audit + idempotency key); NYSE calendar-gated | — |
+| `reporting` | **Agent** — dispatches Excel + Slack report with real NAV/P&L; numbers come from ledger + live prices | — |
+| `synthesis` | **LLM agent** — writes the cited investment memo for the full cycle | sonnet |
 | `judge` | **LLM agent, standalone auditor** — scores full-cycle coherence 1–5; verdict recorded; feeds eval process-quality metrics | sonnet |
 
 **Tool-using agents** (`research`, `technical`) call `LLM.complete_with_tools()`: the LLM controls which tools to call, issues multiple calls if needed, and decides when it has enough information before producing its final response. All other LLM agents use the single-shot `LLM.complete()`.
 
-### Portfolio Manager is NOT an agent
+### Portfolio Manager is not an LLM agent
 
-`PortfolioManagerAgent` is dissolved. Sizing math lives in the deterministic `size_position` tool:
-`size_position(recommendation, conviction, nav, price, policy) → qty`. There is exactly **one**
-direction-decision maker (Research Manager). The sizing step never flips a buy/sell into Hold for
-directional reasons — only because qty rounds to 0 or RiskPolicy caps it.
+`PortfolioManagerAgent` (the LLM-based PM) is dissolved. Sizing math lives in the deterministic
+`size_position` tool called from the `pm` node:
+`size_position(recommendation, conviction, nav, price, policy) → qty`. The `portfolio_manager/`
+package remains as a schema source (`TradeProposal`, `Hold`) shared by the pm and risk nodes.
+There is exactly **one** direction-decision maker (Research Manager). The sizing step never flips
+a buy/sell into Hold for directional reasons — only because qty rounds to 0 or RiskPolicy caps it.
 
 ### Mandatory guardrails (deterministic — LLM cannot skip)
 
-- **Risk guardrail** — runs in every pipeline path before any ledger write; re-validates against
-  `RiskPolicy`; routes > 5% NAV to HITL even if the Manager already self-checked.
-- **Execution** — single ACID transaction keyed by `idempotency_key`; the only thing that moves money.
-- **Cross-cutting:** injection scan on retrieved text · token-budget circuit breaker · output-schema validation.
+- **Risk guardrail (`risk` node)** — runs in every pipeline path before any ledger write; re-validates
+  against `RiskPolicy`; routes > 5% NAV to HITL even if the Manager already self-checked.
+- **Execution** — single ACID transaction keyed by `idempotency_key`; the only thing that moves money;
+  NYSE calendar-gated (`CycleOutcome.REJECTED_MARKET_CLOSED` when market is closed).
+- **Cross-cutting:** injection scan on retrieved text · token-budget circuit breaker (`TokenBudgetLLM`) ·
+  output-schema validation.
 
 ### HITL is a feedback loop
 
@@ -103,14 +106,17 @@ ports/
 adapters/
   llm_anthropic.py     Live — full tool-calling loop via Anthropic API
   llm_cassette.py      Replay — record once, serve from JSONL; supports tool-loop responses
+  llm_offline.py       build_offline_llm() + GracefulLLM; CASSETTE_MODE=record to network
+  llm_token_budget.py  TokenBudgetLLM — circuit-breaker wrapping any LLM port
   fakes.py             In-memory fakes for unit tests (FakeLLM, FakeMarketData, …)
-  evidence_pgvector.py Live — pgvector similarity search
-  market_data_live.py  Live — OHLCV feed
-  market_data_frozen.py Replay — frozen Parquet bars
+  embeddings.py        SentenceTransformerEmbedder (all-MiniLM-L6-v2, 384-dim) — real embeddings
+  evidence_pgvector.py Live — pgvector similarity search using SentenceTransformerEmbedder
+  market_data_frozen.py Replay — frozen CSV/Parquet bars (the only market-data adapter)
   report/
     file.py    FileReportSink — text file + alerts.log
-    slack.py   SlackReportSink — Block Kit messages
+    slack.py   SlackReportSink — Block Kit messages (Approve/Reject/Edit buttons)
     excel.py   ExcelReportSink — openpyxl workbook
+    multi.py   MultiReportSink — fan-out to ExcelReportSink + SlackReportSink
 ```
 
 `ReportSink` rendering (text formatting, Block Kit builders, Excel sheet writers) is separated from delivery: the render functions sit at the top of each file and are callable independently of the sink class.
@@ -142,23 +148,21 @@ llm.complete_with_tools(
 src/firm/
   agents/
     base.py                  BaseAgent[InputT, OutputT] ABC
-    research/                Tool-using: search_news (+ fetch_live_news in prod), Evidence | Refusal
-    technical/               Tool-using: price_indicators tool, TechnicalSignal
-    debater/                 LLM: one DebaterAgent class; runs bull ⇄ bear turns × N rounds
+    research/                Tool-using: search_news closure, Evidence | Refusal
+    technical/               Tool-using: price_indicators closure, TechnicalSignal
+    debater/                 LLM: one DebaterAgent class (stance arg); DebaterCase | DebaterFailure
     research_manager/        LLM: SOLE decider — adjudicates debate → direction + conviction
-    reporting/               LLM: writes investment memo + dispatches via make_report tool
+    reporting/               Dispatches Excel + Slack report; real NAV/P&L from ledger + prices
+    synthesis/               LLM: writes the cited investment memo for the cycle
+    execution/               Atomic ledger commit; NYSE calendar-gated
     judge/                   LLM: standalone independent auditor — coherence score 1–5, recorded
+    portfolio_manager/       Schemas only: TradeProposal, Hold (used by pm + risk nodes)
   tools/
-    search_news.py           Retrieves cited news chunks from the evidence store
-    fetch_live_news.py       Production: fetches live news, appends to corpus
-    price_indicators.py      RSI / MACD / Bollinger from market-data adapter
     size_position.py         Deterministic sizing: conviction × NAV → qty, capped by RiskPolicy
     check_risk.py            Advisory wrapper: RiskPolicy.check_trade (pre-sizing self-validation)
-    make_report.py           Build + dispatch DailyReport to FileReportSink / SlackReportSink / ExcelReportSink
-    ledger_commit.py         Atomic ledger write — the only thing that moves money
   orchestration/
     state.py     GraphState TypedDict — JSON-serialisable envelope
-    graph.py     build_graph(checkpointer, risk_policy, ports) → CompiledStateGraph
+    graph.py     build_graph(checkpointer, ports) → CompiledStateGraph
     nodes.py     make_*_node factories; NodePorts DI container
     checkpointer.py  Postgres checkpointer setup
   domain/
@@ -183,11 +187,12 @@ src/firm/
 
 | Tier | LLM | Market data | News |
 |---|---|---|---|
-| **Historic replay (offline / CI)** | Cassette | Frozen Parquet | Frozen corpus |
-| **Agents on offline input** | FakeLLM / cassette | FakeMarketData | Frozen corpus |
-| **Production (live)** | Anthropic API | yfinance | `fetch_live_news` → appended to corpus |
+| **Historic replay (offline / CI)** | Cassette (via `build_offline_llm`) | Frozen CSV/Parquet | Frozen corpus |
+| **Default offline (demo)** | FakeLLM (via `build_offline_llm`) | FakeMarketData | Frozen corpus |
+| **Production (live)** | Anthropic API | live adapter | `NewsIngestionAgent` → appended to corpus |
 
-Live findings are appended to the corpus so each future offline eval replay is progressively richer.
+The demo is fully offline by default. Only `CASSETTE_MODE=record` touches the network.
+Both `cli.py` and `eval/replay.py` run the same `firm.orchestration.graph.build_graph`.
 
 ---
 
@@ -204,23 +209,23 @@ Live findings are appended to the corpus so each future offline eval replay is p
 
 ```
 Trigger
-  → research node:  LLM calls search_news × N [+ fetch_live_news in prod] → Evidence (cited)
-  → technical node: LLM calls price_indicators() → TechnicalSignal              (parallel)
-  → debater: DebaterAgent(bull) + DebaterAgent(bear) alternate × MAX_ROUNDS
+  → research node:  LLM calls search_news closure × N → Evidence (cited)
+  → technical node: LLM calls price_indicators closure → TechnicalSignal    (parallel)
+  → debate_bull / debate_bear: DebaterAgent(bull) + DebaterAgent(bear) alternate × MAX_ROUNDS
   → research_manager: adjudicates debate → direction (strong_buy…strong_sell) + conviction (0–1)
-  → size_position(recommendation, conviction, nav, price, policy) → TradeProposal | Hold  [deterministic]
-  → check_risk(trade, portfolio, policy) → advisory validation
-  → RISK GUARDRAIL: mandatory re-validation; > 5% NAV → HITL interrupt
+  → pm node: size_position(recommendation, conviction, nav, price, policy) → TradeProposal | Hold
+  → risk node: RiskAgent.check_trade; > 5% NAV → HITL interrupt
       (HITL: checkpoint → Slack request → await human approve/edit/reject → ApprovalRow recorded → resume)
-  → execution: ledger_commit (cash debit + FIFO lot + audit row)  [single ACID txn, idempotency key]
-  → reporting: LLM writes memo + make_report → FileReportSink / SlackReportSink / ExcelReportSink
+  → execution: atomic ledger commit  [single ACID txn, idempotency key; NYSE calendar-gated]
+  → reporting: dispatches DailyReport to MultiReportSink → ExcelReportSink + SlackReportSink
+  → synthesis: LLM writes cited investment memo
   → judge: independent LLM scores full-cycle coherence 1–5 → Verdict recorded
 ```
 
 **Three correctness-critical invariants:**
-1. `execution` / `ledger_commit` is a single ACID transaction keyed by `idempotency_key` — retried execution is a no-op.
-2. `RISK GUARDRAIL` re-validates at execution time — a stale human approval against a moved price is caught.
-3. `Research Manager` is the only component that decides direction — `size_position` never re-derives a signal.
+1. `execution` is a single ACID transaction keyed by `idempotency_key` — retried execution is a no-op.
+2. The `risk` node re-validates against `RiskPolicy` after every HITL resume — a stale approval against a moved price is caught.
+3. `Research Manager` is the only component that decides direction — the `pm` node / `size_position` never re-derives a signal.
 
 ---
 
@@ -231,11 +236,11 @@ Trigger
 | Tool-using agents for research + technical | LLM controls its own information gathering; multiple search queries produce better evidence than a single hardcoded query |
 | Single decision-maker (Research Manager) | Dissolving Portfolio Manager removes the two-signal conflict; the Judge no longer needs to flag PM-vs-Manager incoherence |
 | `size_position` is deterministic, not an agent | Sizing math (conviction × NAV, RiskPolicy caps) has a correct answer; no LLM judgment needed; testable in isolation |
-| One `DebaterAgent` class, two roles | Eliminates `bull_researcher` / `bear_researcher` duplication; stance is a constructor arg; schemas merge into one `CycleSnapshot` |
-| Tools layer (`src/firm/tools/`) | Deterministic capabilities are importable + unit-testable without a graph; agents call tools via `complete_with_tools`; test fakes stub at tool level |
+| One `DebaterAgent` class, two roles | Eliminates duplication; stance is a constructor arg; output schema unified as `DebaterCase | DebaterFailure` |
+| Tools layer (`src/firm/tools/`) | Deterministic capabilities (`size_position`, `check_risk`) are importable + unit-testable without a graph; tool closures for LLM agents live inline in each agent |
 | Risk guardrail is mandatory and LLM-unreachable | Defense-in-depth: the Manager may self-check risk; the guardrail re-validates unconditionally before ledger write |
 | HITL is a recorded feedback loop | Every approve/edit/reject persisted as `ApprovalRow` → override rate + latency are measurable process metrics |
-| Reporting is an LLM agent, not a pure function | It writes a cited investment memo (graded requirement); dispatching the report (Excel + Slack) is via `make_report` tool |
+| Reporting dispatches; synthesis writes the memo | `reporting` fetches prices + ledger and sends the structured report (Excel + Slack); `synthesis` (LLM) writes the cited investment memo |
 | Judge is standalone | It audits the whole cycle including the memo, so it must not be the agent that wrote it; its 1–5 score feeds eval process-quality metrics |
 | Pipeline graph over supervisor | Workflow is deterministic; supervisor adds routing nondeterminism that fights replayability (FR-6) |
 | Single Postgres for ledger + checkpoints | One ACID boundary; trade write and checkpoint commit together — durability by construction |

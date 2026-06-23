@@ -2,11 +2,6 @@
 
 > Architecture narrative, key design decisions, and documented limitations.
 > Companion to `docs/runbook.md` (operations) and `docs/agents_and_tools.md` (agent roster).
->
-> **This document describes the TARGET design** agreed in `docs/PROJECT_UNDERSTANDING.md`.
-> The build work to reach this target is tracked in `docs/REFACTOR_TICKETS.md`.
-> Where the current code differs (e.g. five-node eval graph, `portfolio_manager` still present),
-> this document reflects the target.
 
 ---
 
@@ -52,9 +47,10 @@ Scheduler (scheduled triggers)         News Event Listener (debounced)
 |---|---|---|---|
 | Research | `(symbol, decision_ts)` | `Evidence \| Refusal` | RAG agent; grounded cited claims |
 | Technical | price bars | `TechnicalSignal \| TechnicalUnavailable` | RSI/MACD/Bollinger |
-| Debater (bull ⇄ bear) | evidence + TA + opponent history | `BullCase \| BearCase \| DebaterFailure` | One class, two roles |
+| Debater (bull ⇄ bear) | evidence + TA + opponent history | `DebaterCase \| DebaterFailure` | One class, two roles |
 | Research Manager | debate transcript | `ResearchPlan \| ResearchManagerFailure` | **Sole direction decider** |
-| Reporting | cycle + ledger state | `ReportSent \| ReportFailure` | Memo + Excel + Slack |
+| Reporting | cycle + ledger state | `ReportSent \| ReportFailure` | Real NAV/P&L; Excel + Slack dispatch |
+| Synthesis | cycle signals + memo prompt | `SynthesisReport \| SynthesisFailure` | LLM investment memo |
 | Judge | full cycle + memo | `Verdict \| JudgeFailure` | Independent 1–5 coherence audit |
 
 **Deterministic sizing (not an agent):**
@@ -64,9 +60,10 @@ Scheduler (scheduled triggers)         News Event Listener (debounced)
 | `size_position` | `ResearchPlan` + NAV + price + policy | `TradeProposal \| Hold` |
 | `check_risk` | trade stub + portfolio + prices | `Approved \| Rejected` |
 
-`Portfolio Manager is NOT an agent.` It dissolved into the deterministic `size_position` and
-`check_risk` tools (Ticket R1). This removes the old two-decision-makers conflict where the PM
-could re-derive its own signal and override the Research Manager with a `Hold`.
+`Portfolio Manager is NOT an LLM agent.` The sizing logic lives in the deterministic `size_position`
+tool called from the `pm` node. The `portfolio_manager/` package remains as a schema source
+(`TradeProposal`, `Hold`). This removes the old two-decision-makers conflict where the PM could
+re-derive its own signal and override the Research Manager with a `Hold`.
 
 All failure modes are result unions — no exceptions cross agent boundaries. A pipeline
 failure checkpoints state and halts the cycle (fail-safe). No trade reaches the ledger
@@ -79,10 +76,12 @@ without passing the mandatory risk guardrail step.
 Four Protocol ports define every external IO boundary:
 
 ```
-MarketDataSource   — OHLCV bars; live adapter vs frozen CSV adapter (replay/CI)
-EvidenceStore      — news chunk retrieval; pgvector adapter vs in-memory fake
-LLM                — language model calls; Anthropic adapter vs cassette adapter (CI)
-ReportSink         — Excel + Slack output; real adapter vs no-op fake (tests)
+MarketDataSource   — OHLCV bars; FrozenMarketData (replay/CI) vs live adapter (production)
+EvidenceStore      — news chunk retrieval; PgvectorEvidenceStore (SentenceTransformerEmbedder,
+                     384-dim, all-MiniLM-L6-v2) vs FakeEvidenceStore (tests)
+LLM                — language model calls; AnthropicLLM (live) vs CassetteLLM (CI) vs FakeLLM
+ReportSink         — Excel + Slack output; MultiReportSink (ExcelReportSink + SlackReportSink)
+                     vs FakeReportSink (tests)
 ```
 
 Agents depend on the Protocol interfaces, never on concrete adapters. Swapping
@@ -125,16 +124,16 @@ supervisor or hierarchical router. Reasons:
 - A supervisor adds dynamic routing nondeterminism that fights auditability.
 - At six agents there is nothing to dynamically route.
 
-**One graph, one source of truth.** Both `cli.py` and `eval/replay.py` must run
-`firm.orchestration.graph.build_graph`. The current code diverges (eval builds its own
-inline 5-node pipeline); convergence is Ticket R2.
+**One graph, one source of truth.** Both `cli.py` and `eval/replay.py` call
+`firm.orchestration.graph.build_graph` — they run the same pipeline topology.
 
-**Interrupt/resume for HITL** — the risk guardrail step calls `interrupt()` when notional
+**Interrupt/resume for HITL** — the `risk` node calls `interrupt()` when notional
 exceeds 5% NAV. LangGraph checkpoints the full graph state to Postgres before pausing.
-A human responds via Slack; the graph resumes from the checkpoint, re-validates limits
-against the current bar, and proceeds to execution (or rejects if limits are now breached).
-Every human approve/edit/reject is recorded as an `ApprovalRow` in the audit log so
-override rate and latency are measurable process metrics (Ticket R6).
+A human responds via Slack (Block Kit Approve/Reject/Edit buttons); the graph resumes from
+the checkpoint, re-validates limits against the current bar, and proceeds to execution (or
+rejects if limits are now breached). Every human approve/edit/reject is recorded as an
+`ApprovalRow` via `LedgerRepository.record_approval` — override rate and HITL latency are
+measurable process metrics.
 
 ---
 
@@ -260,9 +259,10 @@ Applying it is a deliberate non-goal for a local demo.
 resume from checkpoint); zero-downtime failover is not. The HA path is documented in
 `infra/main.tf` (RDS Multi-AZ) but not applied.
 
-**No live data feed (replay/CI).** Market data is frozen OHLCV CSVs. The `MarketDataSource`
-port makes adding a live feed adapter a one-file change. In production, `yfinance` is used
-via the `fetch_live_news` tool and a live `MarketDataSource` adapter.
+**No live market-data adapter.** Market data is frozen OHLCV CSVs (`market_data_frozen.py`
+is the only adapter). The `MarketDataSource` port makes adding a live feed adapter a one-file
+change. `NewsIngestionAgent` exists for live news fetching (via `yfinance`) but is not wired
+into the orchestration graph.
 
 **Synthetic news corpus.** `data/news/corpus.json` contains 50-100 synthetic articles,
 license-clean for commit. Real news requires a vendor subscription.
@@ -271,18 +271,8 @@ license-clean for commit. Real news requires a vendor subscription.
 adapter to keep CI offline; a production eval would record real Anthropic responses. The
 current cassette means eval metrics reflect fake responses, not real model quality.
 
-**Eval graph diverged (Ticket R2).** `eval/replay.py` builds its own inline 5-node pipeline
-rather than calling `firm.orchestration.graph.build_graph`. Until R2 is merged, the eval
-does not exercise the real pipeline topology described here.
-
-**Reporting emits hard-coded zeros (Ticket R7).** Current code hard-codes `pnl = Decimal("0")`
-and computes NAV cash-only without prices. Fix tracked in R7.
-
-**RAG embeddings are random (Ticket R7).** `_embed()` ignores the API key and returns a
-random vector; retrieval is keyword-only. Fix tracked in R7.
-
-**Observability spans are no-ops (Ticket R5).** Span decorators exist but emit nothing.
-Trace-replay currently relies solely on the audit log.
+**Observability spans are no-ops.** Span decorators exist but emit nothing.
+Trace-replay relies solely on the audit log.
 
 **Long-only, v1.** No shorting or margin mechanics.
 

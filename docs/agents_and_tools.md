@@ -1,69 +1,59 @@
 # Agents and Tools
 
-> **This document describes the TARGET design** agreed in `docs/PROJECT_UNDERSTANDING.md`.
-> The build work to reach this target is tracked in `docs/REFACTOR_TICKETS.md`.
-> The current code implements an earlier shape (11 nodes including `portfolio_manager`,
-> `bull_researcher`, `bear_researcher`, `synthesis`); where the current code differs this
-> document reflects the target, not the current state.
-
----
-
 ## At a glance
 
-The target pipeline has **6 real LLM agents** and a **deterministic tools layer**. No agent is
+The pipeline has **6 real LLM agents** and a **deterministic tools layer**. No agent is
 a disguised service. One agent decides direction; everything else is deterministic math.
 
 **Real LLM agents:**
 
 | Agent | Node | Model | Output |
 |---|---|---|---|
-| Research | `research_node` | haiku | `Evidence \| Refusal` |
-| Technical | `technical_node` | haiku | `TechnicalSignal \| TechnicalUnavailable` |
-| Debater (bull role) | `debate_bull` | haiku | `BullCase \| BullFailure` |
-| Debater (bear role) | `debate_bear` | haiku | `BearCase \| BearFailure` |
-| Research Manager | `research_manager_node` | sonnet | `ResearchPlan \| ResearchManagerFailure` |
-| Reporting | `reporting_node` | sonnet | `ReportSent \| ReportFailure` |
-| Judge | `judge_node` | sonnet | `Verdict \| JudgeFailure` |
+| Research | `research` | haiku | `Evidence \| Refusal` |
+| Technical | `technical` | haiku | `TechnicalSignal \| TechnicalUnavailable` |
+| Debater (bull role) | `debate_bull` | haiku | `DebaterCase \| DebaterFailure` |
+| Debater (bear role) | `debate_bear` | haiku | `DebaterCase \| DebaterFailure` |
+| Research Manager | `research_manager` | sonnet | `ResearchPlan \| ResearchManagerFailure` |
+| Synthesis | `synthesis` | sonnet | `SynthesisReport \| SynthesisFailure` |
+| Judge | `judge` | sonnet | `Verdict \| JudgeFailure` |
 
 **Deterministic tools layer** (no LLM — the LLM cannot skip or reorder these):
 
-| Tool | Replaces | Purpose |
+| Tool | Where defined | Purpose |
 |---|---|---|
-| `size_position` | `portfolio_manager` agent | Sizing math: conviction × NAV → qty, capped by RiskPolicy |
-| `check_risk` | pre-execution self-check | Wraps `RiskPolicy.check_trade`; advisory before the mandatory gate |
-| `search_news` | (was inline in research) | `EvidenceStore.search` + injection scan |
-| `fetch_live_news` | `news_ingestion` (orphaned) | yfinance pull → `embed_and_store`; production only |
-| `price_indicators` | (was inline in technical) | `MarketDataSource.get_bars` + `compute_indicators` |
-| `make_report` | (was inline in reporting) | Assembles `DailyReport`, dispatches Excel + Slack |
-| `ledger_commit` | (was inline in execution) | Atomic ACID write (cash + lot + trade + audit) |
+| `size_position` | `src/firm/tools/size_position.py` | Sizing math: conviction × NAV → qty, capped by RiskPolicy |
+| `check_risk` | `src/firm/tools/check_risk.py` | Wraps `RiskPolicy.check_trade`; advisory before the mandatory gate |
+| `search_news` | inline closure in `research` agent | `EvidenceStore.search` + injection scan; called by the LLM tool loop |
+| `price_indicators` | inline closure in `technical` agent | `MarketDataSource.get_bars` + `compute_indicators`; called by the LLM tool loop |
 
 **Mandatory deterministic gates** (cross-cutting — the LLM cannot skip them):
 
 | Gate | Position | Action |
 |---|---|---|
-| Risk guardrail | After `size_position`/`check_risk`, before every ledger write | Re-validates against RiskPolicy; routes > 5% NAV to HITL interrupt |
-| Execution | After risk guardrail | Atomic ledger commit (the only thing that moves money) |
-| Injection scan | Inside `search_news` | Filters every retrieved chunk before the LLM sees it |
-| Token-budget circuit breaker | Cross-cutting | Halts the pipeline if token budget is exhausted |
+| Risk node (`risk`) | After `pm` node, before every ledger write | Re-validates against RiskPolicy; routes > 5% NAV to HITL interrupt |
+| Execution node | After risk node | Atomic ledger commit (the only thing that moves money); NYSE calendar-gated |
+| Injection scan | Inside `search_news` closure | Filters every retrieved chunk before the LLM sees it |
+| Token-budget circuit breaker | Cross-cutting (`TokenBudgetLLM`) | Halts the pipeline if token budget is exhausted |
 | Output-schema validation | Cross-cutting | Validates every agent output against its typed schema |
 
 **Pipeline:**
 
 ```
 research + technical (parallel)
-        → debate (bull ⇄ bear ×N rounds, ONE DebaterAgent class)
-        → Research Manager (decide direction + conviction)   [SOLE decider — LLM]
-        → size_position (deterministic) + check_risk
-        → [RISK GUARDRAIL] →(> 5% NAV)→ HITL interrupt → human approve/edit/reject  (RECORDED)
-        → Execution (atomic ledger write)
-        → Reporting agent (investment memo + Excel/Slack via make_report)
-        → Judge (independent coherence audit, recorded)
+        → debate_bull → debate_bear (×N rounds, ONE DebaterAgent class, two stances)
+        → research_manager (decide direction + conviction)   [SOLE decider — LLM]
+        → pm (deterministic sizing via size_position tool)
+        → risk →(> 5% NAV)→ HITL interrupt → human approve/edit/reject  (RECORDED)
+        → execution (atomic ledger write, NYSE calendar-gated)
+        → reporting (Excel + Slack dispatch, real NAV/P&L)
+        → synthesis (LLM investment memo)
+        → judge (independent coherence audit, recorded)
         → END
 ```
 
 `research` and `technical` fan out in parallel from START. `debate_bull` waits for both.
-The Debater is **one class** instantiated in two roles — no separate `bull_researcher` /
-`bear_researcher` classes.
+The Debater is **one class** (`DebaterAgent`) instantiated with `stance="bull"` or `stance="bear"`;
+both nodes share the same code and produce `DebaterCase | DebaterFailure`.
 
 ---
 
@@ -115,8 +105,6 @@ upserts them into the pgvector corpus before the search loop begins.
 input:  lookback_days  int  optional  days of history, default 40, max 90
 returns formatted text: RSI, MACD, Bollinger, BB position, avg volume, last close
 ```
-*(Previously named `get_price_and_indicators` in the current code; renamed to `price_indicators`
-to match the tools-layer naming convention in the target.)*
 
 ---
 
@@ -129,15 +117,13 @@ These call `LLM.complete()` once with a structured prompt and parse the JSON res
 - **Responsibility:** Argue the strongest **upside** (bull) or **downside** (bear) case, rebutting
   the other side's most recent argument. Implemented as **one `DebaterAgent` class** parameterised
   by `stance` (`"bull"` or `"bear"`); the two nodes share the same code.
-- **I/O:** `DebaterInput` → `BullCase | BearCase | DebaterFailure`
+- **I/O:** `DebaterInput` → `DebaterCase | DebaterFailure`
 - **What it does:**
   1. `_build_messages()` injects `evidence_summary`, `technical_summary`, and — if the opponent's history is non-empty — their last argument to rebut.
   2. `LLM.complete` (haiku, 768 tokens), single shot.
   3. `parse_json_dict()` → `argument` + `key_points`.
-- **Code/deps:** `LLM.complete`, `parse_json_dict`, private `_build_messages`.
+- **Code/deps:** `LLM.complete`, `parse_json_dict`, private `_build_messages` (in `agent.py`).
 - **Failure modes:** `DebaterFailure` — `llm_error: …` or `non-object JSON`.
-- **Target change from current code:** the two near-identical classes `bull_researcher` /
-  `bear_researcher` are merged into one `DebaterAgent` class (Ticket R4).
 
 ## research_manager → `research_manager_node`
 
@@ -154,24 +140,34 @@ These call `LLM.complete()` once with a structured prompt and parse the JSON res
 
 ## reporting → `reporting_node`
 
-- **Responsibility:** Write the investment memo and dispatch the full cycle report through ≥2
-  channels (Excel + Slack) via the `make_report` tool.
+- **Responsibility:** Fetch prices + ledger state, assemble a `DailyReport` with real NAV/P&L, and
+  dispatch it through ≥2 channels (Excel + Slack). No LLM — purely deterministic.
 - **I/O:** `ReportingInput` → `ReportSent | ReportFailure`
 - **What it does:**
-  1. Calls the `make_report` tool, which assembles a `DailyReport` (NAV, P&L, positions, trades,
-     memo prose) and dispatches it through `ReportSink.send_daily_report`.
-  2. The LLM writes the narrative investment memo; all numbers come from the ledger (no hard-coded zeros).
-- **Code/deps:** `make_report` tool, `LedgerRepository`, `ReportSink`, `DailyReport`.
-- **Failure modes:** `ReportFailure` — ledger unavailable; sink dispatch error.
-- **Target change from current code:** the current code hard-codes `pnl = Decimal("0")` and
-  passes no prices; that is corrected in Ticket R7. The old `synthesis` node's memo-writing is
-  subsumed here (Ticket R4).
+  1. Fetches current-bar close prices for all held symbols + SPY benchmark from `ports.market_data`.
+  2. Calls `ReportingAgent.run()`: reads the portfolio + cycle trades from `LedgerRepository`,
+     computes NAV = cash + Σ(qty × price), unrealised P&L, and SPY day-over-day benchmark return.
+  3. Dispatches `DailyReport` through `MultiReportSink` → `ExcelReportSink` + `SlackReportSink`.
+- **Code/deps:** `LedgerRepository`, `MultiReportSink`, `MarketDataSource` (via `ports.market_data`).
+- **Failure modes:** `ReportFailure` — ledger unavailable; sink dispatch error (degraded gracefully — does not overwrite `cycle_outcome`).
+
+## synthesis → `synthesis_node`
+
+- **Responsibility:** Write the cited investment memo for the full decision cycle — prose summary
+  integrating evidence, technicals, the debate, and the execution outcome.
+- **I/O:** `SynthesisInput` → `SynthesisReport | SynthesisFailure`
+- **What it does:**
+  1. `_cycle_format` helpers build readable one-liners from each raw signal dict.
+  2. `LLM.complete` (**sonnet**), single shot.
+  3. `_parse_report()` extracts `title`, `executive_summary`, `rationale`, and `risk_factors`.
+- **Code/deps:** `LLM.complete`, `_cycle_format` helpers, `parse_json_dict`.
+- **Failure modes:** `SynthesisFailure` — `llm_error`, `non-object JSON`.
 
 ## judge → `judge_node`
 
 - **Responsibility:** Independent LLM-as-judge auditor — score the whole cycle for coherence
   (evidence ↔ TA ↔ decision ↔ memo) on a 1–5 scale. The verdict is recorded and feeds the
-  eval's process-quality metrics. Must run **after** `reporting` so it can grade the memo; must
+  eval's process-quality metrics. Must run **after** `synthesis` so it can grade the memo; must
   be a **separate agent** from the one that wrote the memo.
 - **I/O:** `JudgeInput` → `Verdict | JudgeFailure`
 - **What it does:**
@@ -189,41 +185,30 @@ These call `LLM.complete()` once with a structured prompt and parse the JSON res
 These are pure functions (or thin wrappers around domain/port calls) with no LLM involvement.
 The graph wires them as steps; the LLM **cannot** choose to skip them.
 
-## size_position  *(target: `src/firm/tools/size_position.py`)*
+## size_position  (`src/firm/tools/size_position.py`)
 
-- **Replaces:** `portfolio_manager` agent (dissolved — Ticket R1).
-- **Signature:** `size_position(recommendation, conviction, nav, price, policy) -> TradeProposal | Hold`
-- **Logic:** conviction scales the target notional (conviction=1.0 → 10% NAV); capped by
-  `RiskPolicy` (per-trade ≤ 10% NAV); floored to whole shares; qty rounds to 0 → `Hold`.
-  Direction comes from the Research Manager's `recommendation` — `size_position` **never**
-  re-derives direction.
+- **Signature:** `size_position(recommendation, conviction, nav, price, max_trade_notional_pct) -> Decimal`
+- **Called by:** the `pm` node (deterministic, no LLM).
+- **Logic:** conviction scales the target notional (conviction=1.0 → `max_trade_notional_pct` of NAV);
+  floored to whole shares. Direction comes from the Research Manager's `recommendation` —
+  `size_position` **never** re-derives direction.
 - **Why deterministic:** guarantees no hallucinated quantities; all numbers are arithmetic.
 
-## check_risk  *(target: `src/firm/tools/check_risk.py`)*
+## check_risk  (`src/firm/tools/check_risk.py`)
 
-- **Replaces:** the advisory part of the old `risk` agent.
 - **Signature:** `check_risk(trade, portfolio, prices, policy) -> Approved | Rejected`
-- **Logic:** thin wrapper around `RiskPolicy.check_trade`. Used as a self-check step after sizing.
-  Does **not** replace the mandatory risk guardrail at execution (defense-in-depth).
+- **Called by:** the `risk` node as the advisory pre-check before the mandatory HITL gate.
+- **Logic:** thin wrapper around `RiskPolicy.check_trade`. Defense-in-depth: the mandatory risk
+  guardrail (`risk` node) re-validates unconditionally regardless of this advisory result.
 
-## search_news — see research agent above
+## search_news — inline closure in the `research` agent
 
-## fetch_live_news  *(target: `src/firm/tools/fetch_live_news.py`)*
+See the research agent section above. The closure is defined inside `make_research_node`
+and passed as an executor to `LLM.complete_with_tools`.
 
-- **Replaces:** the orphaned `news_ingestion` agent (now wired deliberately — Ticket R5).
-- **Logic:** `yfinance` pull → filter to NewsDoc objects newer than the lookback cutoff → `EvidenceStore.embed_and_store`. Production only; not run in replay/CI.
+## price_indicators — inline closure in the `technical` agent
 
-## price_indicators — see technical agent above
-
-## make_report  *(target: `src/firm/tools/make_report.py`)*
-
-- **Logic:** assembles `DailyReport` (NAV computed from ledger + live prices, real P&L, positions,
-  trades, memo prose) and dispatches through `ReportSink.send_daily_report` (Excel + Slack).
-
-## ledger_commit  *(target: `src/firm/tools/ledger_commit.py`)*
-
-- **Logic:** the atomic ACID write that is currently inline in the `execution` node — extracted to
-  a named tool so it can be unit-tested independently of the graph.
+See the technical agent section above. The closure is defined inside `make_technical_node`.
 
 ---
 
@@ -254,41 +239,39 @@ or `max_rounds` → return final text.
 # Node registry / DI
 
 `build_graph(checkpointer, ports)` builds nodes from a registry — adding a node is one line.
-The **target** registry (post-R1/R4):
+The node registry in `src/firm/orchestration/graph.py`:
 
 ```python
 _NODE_FACTORIES = {
     "research":          make_research_node,
     "technical":         make_technical_node,
-    "debate_bull":       make_debater_node("bull"),
-    "debate_bear":       make_debater_node("bear"),
+    "debate_bull":       make_bull_node,      # DebaterAgent(stance="bull")
+    "debate_bear":       make_bear_node,      # DebaterAgent(stance="bear")
     "research_manager":  make_research_manager_node,
-    # size_position + check_risk are deterministic steps, not LLM nodes
+    "pm":                make_pm_node,        # deterministic sizing via size_position
+    "risk":              make_risk_node,      # HITL gate
     "execution":         make_execution_node,
     "reporting":         make_reporting_node,
+    "synthesis":         make_synthesis_node,
     "judge":             make_judge_node,
 }
 ```
 
 Every factory is `(ports: NodePorts) -> Callable`. `NodePorts` is the single DI container holding
 all external dependencies (LLM, market data, evidence store, ledger, report sink, guardrails,
-risk policy, portfolio).
+risk policy, portfolio, calendar). Both `cli.py` and `eval/replay.py` call `build_graph`.
 
 ---
 
 # Limitations worth knowing
 
-1. **`FakeLLM.complete_with_tools` uses hardcoded wrong arg names.** Calls executors with
-   `{"query":"test","k":5}` — wrong for `price_indicators` which takes `lookback_days`. Also
-   wraps executors in `except Exception: pass`, masking real bugs. Fix tracked in Ticket R7.
-2. **Eval does not test the real graph.** `eval/replay.py` builds its own inline 5-node pipeline
-   that imports nothing from `firm.orchestration`. Convergence to one graph is Ticket R2.
-3. **Reporting emits hard-coded zeros in current code.** `pnl`, `benchmark_return`,
-   `current_price`, `unrealized_pnl` are all literal `0`. Fix (real ledger numbers + prices
-   passed from graph state) is Ticket R7.
-4. **RAG embeddings are random in current code.** `_embed()` ignores the API key and returns a
-   random vector; retrieval is keyword-only. Fix is Ticket R7.
-5. **Observability spans are no-ops.** Span decorators exist but do nothing; trace-replay relies
-   solely on the audit log. Wire tracked in Ticket R5.
-6. **`fetch_live_news` (née `news_ingestion`) orphaned in current code.** Nothing imports it.
-   Wiring it as the production live-data tool is Ticket R5.
+1. **`FakeLLM.complete_with_tools` uses hardcoded arg names.** Calls executors with
+   `{"query":"test","k":5}` — the wrong key for `price_indicators` (which takes `lookback_days`).
+   Also wraps executors in `except Exception: pass`, masking real bugs.
+2. **`NewsIngestionAgent` not wired into the graph.** The agent exists in
+   `agents/news_ingestion/` but nothing imports it from the orchestration layer. Live news
+   ingestion is not active in the current demo path.
+3. **No live market-data adapter.** `market_data_frozen.py` is the only market-data adapter;
+   there is no `market_data_live.py`. Wiring a live feed requires adding a new adapter.
+4. **Observability spans are no-ops.** Span decorators exist but emit nothing; trace-replay
+   relies solely on the audit log.
