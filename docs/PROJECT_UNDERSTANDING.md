@@ -105,8 +105,10 @@ NOT WIRED. The refactor (R1–R8 + the HITL/bot work) converged to one graph and
 All of the items below are now **resolved**:
 
 - **One graph.** Both `cli.py` and `eval/replay.py` now run `firm.orchestration.graph.build_graph`.
-- **Eval shows a real trade** — single decision-maker (Research Manager) + deterministic
-  `size_position`; no more `llm=None → Hold`.
+- **Eval runs on the converged graph** — single decision-maker (Research Manager) + deterministic
+  `size_position` (no more `llm=None → Hold`). ⚠️ The *offline* eval currently records **0 filled
+  trades** — the **live** path makes real trades, but the offline replay degrades on an incomplete
+  cassette; see §9 known gaps.
 - **Real RAG embeddings** — `SentenceTransformerEmbedder` (all-MiniLM-L6-v2, 384-dim) in pgvector.
 - **Reporting computes real NAV / P&L / benchmark** from the ledger + live prices.
 - **Wired deliverables:** Excel + Slack sinks (`MultiReportSink`, ≥2 channels), `NYSECalendar`
@@ -132,3 +134,29 @@ All of the items below are now **resolved**:
 2. ~~Judge fold?~~ **RESOLVED** — Judge stays a **standalone independent auditor** (its own final
    node). It grades the whole cycle including the memo, so it must not be the agent that wrote the
    memo. Its 1–5 coherence score is recorded and feeds the eval's process-quality metrics. (Reversible.)
+
+## 9. Current status & known gaps (TODO)
+
+**Shipped and verified live** (on `main`): one converged graph; real agents (Research, Technical,
+Debater bull⇄bear, Research Manager) + deterministic `size_position`/`check_risk` tools;
+always-HITL with override over Telegram (`firm bot`), durable via the Postgres checkpoint; NYSE
+market-hours gating; real NAV/P&L; pgvector RAG; Langfuse traces; Excel + Slack reports; 530 tests
++ `make lint` green. A live `firm run`/`firm bot` produces genuine buy/sell/hold decisions — e.g. an
+**AMD "tactical long" at 52% conviction** with a real bull/bear debate, correctly gated to market
+hours (after-hours → `rejected_market_closed`).
+
+### Known gaps / TODO (ordered by value)
+1. **Offline eval shows 0 filled trades — highest-value gap.** `make eval` runs, is reproducible,
+   and reports honestly, but the offline replay records an **incomplete cassette** (~28 of ~360 LLM
+   calls) and degrades to 100% refusal / 0 trades. Root cause is isolated to the **offline eval
+   flow** — research refusing despite a populated 58-article corpus (FakeEvidenceStore retrieval /
+   `relevance > 0.7` filter / graph routing), **not** data, timestamps, or rate limits (all fixed:
+   real Aug–Oct 2024 bars, mid-session timestamps, SDK retry/backoff). The **live path is verified**;
+   only the offline backtest is flat. _TODO: trace why offline research refuses on the corpus — an
+   offline debug, no live cost._
+2. **Telegram card formatting.** Cards fall back to plain text (literal `*`) when LLM rationale
+   breaks Markdown. _TODO: switch the bot to HTML (`escape < > &`, `<b>` labels) for reliable bold._
+3. **Approval channels.** Telegram + console are real; **Slack / email / SMS are stubs** behind the
+   `ApprovalChannel` protocol. _TODO if a second live channel is required._
+4. **Observability spans.** Span decorators are no-ops; tracing leans on the Postgres audit log +
+   Langfuse `@observe`. _TODO: real spans if finer traces are needed._
