@@ -702,20 +702,22 @@ def _build_live_domain_objects(
 ) -> tuple[Any, Any, Any, Any, Any]:
     """Construct Portfolio, RiskPolicy, guards, and the real Postgres LedgerRepository.
 
+    Uses the stable FIRM_PORTFOLIO_ID so portfolio state accumulates across
+    restarts.  Calls ensure_portfolio() to create the row when it does not
+    exist yet, then loads the persisted Portfolio so NAV and sizing reflect
+    real cash + holdings rather than the fresh-run default.
+
     Returns (portfolio, portfolio_id, guardrail, injection_guard, ledger).
     """
-    import uuid
     from decimal import Decimal
 
     from sqlalchemy import create_engine
 
-    from firm.domain import Portfolio, RiskPolicy
+    from firm.domain import RiskPolicy
     from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
     from firm.persistence.db_url import to_sqlalchemy_url
-    from firm.persistence.ledger import LedgerRepository
+    from firm.persistence.ledger import FIRM_PORTFOLIO_ID, LedgerRepository
 
-    portfolio_id = uuid.uuid4()
-    portfolio = Portfolio(cash=Decimal(str(initial_cash)))
     domain_policy = RiskPolicy(
         max_trade_notional_pct=Decimal(str(risk_policy_config.max_trade_notional_pct)),
         max_name_concentration_pct=Decimal(str(risk_policy_config.max_name_concentration_pct)),
@@ -726,7 +728,12 @@ def _build_live_domain_objects(
     injection_guard = InjectionGuard()
     engine = create_engine(to_sqlalchemy_url(settings.database_url))
     ledger = LedgerRepository(engine)
-    return portfolio, portfolio_id, guardrail, injection_guard, ledger
+
+    starting_cash = Decimal(str(initial_cash))
+    ledger.ensure_portfolio(FIRM_PORTFOLIO_ID, starting_cash)
+    portfolio = ledger.get_portfolio(FIRM_PORTFOLIO_ID)
+
+    return portfolio, FIRM_PORTFOLIO_ID, guardrail, injection_guard, ledger
 
 
 def _run_live_graph_loop(

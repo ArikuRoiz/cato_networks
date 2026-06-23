@@ -193,13 +193,12 @@ def _build_live_domain_objects(
 ) -> tuple[uuid.UUID, Any, Any, Any]:
     """Return (portfolio_id, guardrail, injection_guard, ledger).
 
-    Portfolio ID is resolved from the DB when a row already exists so that
-    server restarts reuse the same portfolio.  A new UUID is generated when
-    the DB has no portfolio yet; ensure_portfolio() will persist it.
+    Always uses FIRM_PORTFOLIO_ID so the web runtime shares persistent
+    portfolio state with the CLI run command across restarts.
     """
     from firm.domain import RiskPolicy
     from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
-    from firm.persistence.ledger import LedgerRepository
+    from firm.persistence.ledger import FIRM_PORTFOLIO_ID, LedgerRepository
 
     domain_policy = RiskPolicy(
         max_trade_notional_pct=Decimal(str(risk_policy_config.max_trade_notional_pct)),
@@ -210,8 +209,7 @@ def _build_live_domain_objects(
     guardrail = LedgerGuardrail(domain_policy)
     injection_guard = InjectionGuard()
     ledger = LedgerRepository(engine)
-    portfolio_id = _resolve_or_mint_portfolio_id(engine)
-    return portfolio_id, guardrail, injection_guard, ledger
+    return FIRM_PORTFOLIO_ID, guardrail, injection_guard, ledger
 
 
 def _build_ports(
@@ -232,7 +230,6 @@ def _build_ports(
     from firm.adapters.llm_token_budget import TokenBudgetLLM
     from firm.adapters.market_data_live import LiveMarketData
     from firm.adapters.report import ExcelReportSink, MultiReportSink, SlackReportSink
-    from firm.domain import Portfolio
     from firm.domain.guardrails import TokenBudgetCircuitBreaker
     from firm.orchestration.checkpointer import _normalise_database_url
     from firm.orchestration.nodes import NodePorts
@@ -259,7 +256,9 @@ def _build_ports(
         report_sink=report_sink,
     )
 
-    portfolio = Portfolio(cash=Decimal("100000"))
+    from firm.persistence.ledger import FIRM_PORTFOLIO_ID
+
+    portfolio = ledger.get_portfolio(FIRM_PORTFOLIO_ID)
     return NodePorts(
         evidence=evidence_store,
         llm=llm,
@@ -392,21 +391,6 @@ def _unregister_pending_run(live_graph: LiveGraph, thread_id: str) -> None:
         ledger.delete_pending_run(thread_id)
     except Exception:
         pass
-
-
-def _resolve_or_mint_portfolio_id(engine: Any) -> uuid.UUID:
-    """Return the first portfolio ID from the DB, or a fresh UUID."""
-    try:
-        from sqlalchemy import text
-        from sqlalchemy.engine import Engine
-
-        with Engine.connect(engine) as conn:  # type: ignore[arg-type]
-            row = conn.execute(text("SELECT id FROM portfolios LIMIT 1")).fetchone()
-            if row is not None:
-                return uuid.UUID(str(row[0]))
-    except Exception:
-        pass
-    return uuid.uuid4()
 
 
 # ---------------------------------------------------------------------------

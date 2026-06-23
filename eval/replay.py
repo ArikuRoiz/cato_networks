@@ -178,6 +178,17 @@ class _FakeLedger:
         self.approvals: list[_ApprovalRecord] = []
         self.cycles: list[CycleAuditRecord] = []
 
+    def ensure_portfolio(
+        self,
+        portfolio_id: uuid.UUID,
+        starting_cash: Decimal,
+    ) -> None:
+        """No-op in-memory version of LedgerRepository.ensure_portfolio.
+
+        The portfolio is already constructed before _FakeLedger is created,
+        so this is a no-op that preserves the offline demo/eval contract.
+        """
+
     def get_portfolio(self, portfolio_id: uuid.UUID) -> Portfolio:
         return self._portfolio
 

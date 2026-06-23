@@ -35,6 +35,16 @@ from firm.persistence.models import (
 )
 
 # ---------------------------------------------------------------------------
+# Stable firm portfolio identity
+# ---------------------------------------------------------------------------
+
+#: One fixed UUID shared by the CLI, web runtime, and every live graph run.
+#: A new UUID each run would make the ledger write to a fresh, empty portfolio
+#: on every restart — cash never survives between runs.  This constant is the
+#: single source of truth; import it wherever a live portfolio_id is needed.
+FIRM_PORTFOLIO_ID: uuid.UUID = uuid.UUID("00000000-0000-4000-8000-000000000001")
+
+# ---------------------------------------------------------------------------
 # CycleAuditRecord — typed input to record_cycle; wraps at the boundary
 # ---------------------------------------------------------------------------
 

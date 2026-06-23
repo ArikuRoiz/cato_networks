@@ -621,3 +621,74 @@ def test_delete_nonexistent_pending_run_is_noop(migrated_engine: Engine) -> None
     repo = LedgerRepository(migrated_engine)
     # Must not raise
     repo.delete_pending_run(f"ghost-{uuid.uuid4().hex}")
+
+
+# ---------------------------------------------------------------------------
+# ensure_portfolio idempotency + buy integration
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_portfolio_then_buy_debits_cash_and_creates_rows(
+    migrated_engine: Engine,
+) -> None:
+    """ensure_portfolio (x2) is idempotent; a subsequent buy debits cash and
+    creates exactly one holding row, one lot row, and one trade row.
+
+    This is the regression test for the HITL fill bug:
+      KeyError 'Portfolio <id> not found' fired because no portfolio row existed.
+    Steps:
+      1. Call ensure_portfolio twice with the same id — must produce one row.
+      2. Call get_portfolio — must return a Portfolio with the starting cash.
+      3. Call buy — must succeed (no KeyError).
+      4. Call get_portfolio again — cash must be debited.
+      5. Assert one trade row and one lot row exist in the DB.
+    """
+    from sqlalchemy import text
+
+    starting_cash = Decimal("100000.00")
+    portfolio_id = uuid.uuid4()
+    repo = LedgerRepository(migrated_engine)
+
+    # Step 1: idempotent seeding
+    repo.ensure_portfolio(portfolio_id, starting_cash)
+    repo.ensure_portfolio(portfolio_id, starting_cash)
+
+    with migrated_engine.connect() as conn:
+        count = conn.execute(
+            text("SELECT COUNT(*) FROM portfolios WHERE id = :id"),
+            {"id": str(portfolio_id)},
+        ).scalar_one()
+    assert count == 1, "Two ensure_portfolio calls must produce exactly one row"
+
+    # Step 2: get_portfolio reflects persisted cash
+    portfolio_before = repo.get_portfolio(portfolio_id)
+    assert portfolio_before.cash == starting_cash
+
+    # Step 3: buy must not raise KeyError
+    trade = _build_trade(portfolio_id, qty=Decimal("10"), price=Decimal("150.00"))
+    filled = repo.buy(trade, portfolio_id)
+    assert filled.status == TradeStatus.FILLED
+
+    # Step 4: cash is debited
+    portfolio_after = repo.get_portfolio(portfolio_id)
+    assert portfolio_after.cash < starting_cash, "Cash must be debited after buy"
+
+    # Step 5: one trade row and one lot row
+    with migrated_engine.connect() as conn:
+        trade_count = conn.execute(
+            text("SELECT COUNT(*) FROM trades WHERE id = :id"),
+            {"id": str(filled.id)},
+        ).scalar_one()
+        lot_count = conn.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM lots l
+                JOIN holdings h ON h.id = l.holding_id
+                WHERE h.portfolio_id = :pid AND h.symbol = 'AAPL'
+                """
+            ),
+            {"pid": str(portfolio_id)},
+        ).scalar_one()
+
+    assert trade_count == 1, "Exactly one trade row must exist after buy"
+    assert lot_count == 1, "Exactly one lot row must exist after buy"
