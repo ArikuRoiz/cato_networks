@@ -23,7 +23,7 @@ import openpyxl
 import pytest
 from slack_sdk.errors import SlackApiError
 
-from firm.adapters.report import ExcelReportSink, SlackReportSink
+from firm.adapters.report import ExcelReportSink, MultiReportSink, SlackReportSink
 from firm.ports.report import ReportSink
 from firm.ports.types import DailyReport, HITLRequest
 
@@ -285,9 +285,10 @@ class TestSlackReportSink:
         values = {el["value"] for el in elements}
         assert "approved" in values
         assert "rejected" in values
+        assert "edit" in values  # Edit-qty button must be present
 
-        # The adapter must never auto-approve — placeholder must return expired.
-        assert result.status == "expired"
+        # Message was delivered — status is PENDING (the LangGraph interrupt is the gate).
+        assert result.status == "pending"
         assert result.decided_by is None
         assert result.edited_qty is None
 
@@ -370,3 +371,135 @@ class TestSlackReportSink:
 
         with pytest.raises(SlackApiError):
             sink.send_alert("daily loss halt triggered", "corr-xyz")
+
+    def test_slack_hitl_no_token_returns_pending(self) -> None:
+        """Dry-run SlackReportSink (no token) logs payload and returns PENDING."""
+        sink = SlackReportSink(token=None, channel="#test")
+        req = _make_hitl_request()
+
+        result = sink.send_hitl_request(req)
+
+        assert result.status == "pending"
+        assert result.decided_by is None
+
+    def test_slack_daily_report_no_token_does_not_raise(self) -> None:
+        """Dry-run SlackReportSink (no token) logs payload without raising."""
+        sink = SlackReportSink(token=None, channel="#test")
+        # Must not raise even without a real Slack token or network.
+        sink.send_daily_report(_make_report())
+
+    def test_slack_hitl_includes_edit_button(self) -> None:
+        """HITL actions block includes an Edit-qty button."""
+        sink, mock_client = self._make_sink()
+
+        sink.send_hitl_request(_make_hitl_request())
+
+        blocks = mock_client.chat_postMessage.call_args.kwargs["blocks"]
+        action_blocks = [b for b in blocks if b["type"] == "actions"]
+        elements = action_blocks[0]["elements"]
+        action_ids = {el["action_id"] for el in elements}
+        assert "hitl_edit" in action_ids
+
+
+# ---------------------------------------------------------------------------
+# MultiReportSink tests
+# ---------------------------------------------------------------------------
+
+
+class TestMultiReportSink:
+    """Tests for MultiReportSink fan-out and failure isolation."""
+
+    def _make_recording_sink(self) -> MagicMock:
+        """Return a MagicMock that satisfies the ReportSink protocol."""
+        mock = MagicMock(spec=["send_daily_report", "send_hitl_request", "send_alert"])
+        return mock
+
+    def test_multi_fan_out_daily_report_to_all_sinks(self) -> None:
+        """send_daily_report is forwarded to every wrapped sink."""
+        sink_a = self._make_recording_sink()
+        sink_b = self._make_recording_sink()
+        multi = MultiReportSink(sinks=[sink_a, sink_b])
+        report = _make_report()
+
+        multi.send_daily_report(report)
+
+        sink_a.send_daily_report.assert_called_once_with(report)
+        sink_b.send_daily_report.assert_called_once_with(report)
+
+    def test_multi_fan_out_alert_to_all_sinks(self) -> None:
+        """send_alert is forwarded to every wrapped sink."""
+        sink_a = self._make_recording_sink()
+        sink_b = self._make_recording_sink()
+        multi = MultiReportSink(sinks=[sink_a, sink_b])
+
+        multi.send_alert("halt", "corr-1")
+
+        sink_a.send_alert.assert_called_once_with("halt", "corr-1")
+        sink_b.send_alert.assert_called_once_with("halt", "corr-1")
+
+    def test_multi_hitl_delegates_to_hitl_sink(self) -> None:
+        """send_hitl_request is delegated to the designated HITL sink only."""
+        from firm.domain.enums import ApprovalStatus
+        from firm.ports.types import ApprovalResult
+
+        excel_sink = self._make_recording_sink()
+        slack_sink = self._make_recording_sink()
+        expected = ApprovalResult(status=ApprovalStatus.PENDING)
+        slack_sink.send_hitl_request.return_value = expected
+
+        # hitl_sink is explicitly the Slack-like sink
+        multi = MultiReportSink(sinks=[excel_sink, slack_sink], hitl_sink=slack_sink)
+        req = _make_hitl_request()
+
+        result = multi.send_hitl_request(req)
+
+        assert result == expected
+        slack_sink.send_hitl_request.assert_called_once_with(req)
+        excel_sink.send_hitl_request.assert_not_called()
+
+    def test_multi_one_sink_failure_does_not_break_others(self, tmp_path: Path) -> None:
+        """A failing sink in send_daily_report must not prevent remaining sinks from running."""
+        failing_sink = self._make_recording_sink()
+        failing_sink.send_daily_report.side_effect = RuntimeError("network error")
+
+        good_sink = self._make_recording_sink()
+        multi = MultiReportSink(sinks=[failing_sink, good_sink])
+        report = _make_report()
+
+        # Must not raise even though failing_sink blows up.
+        multi.send_daily_report(report)
+
+        failing_sink.send_daily_report.assert_called_once_with(report)
+        good_sink.send_daily_report.assert_called_once_with(report)
+
+    def test_multi_alert_failure_does_not_break_others(self) -> None:
+        """A failing sink in send_alert must not prevent remaining sinks."""
+        failing_sink = self._make_recording_sink()
+        failing_sink.send_alert.side_effect = RuntimeError("timeout")
+        good_sink = self._make_recording_sink()
+        multi = MultiReportSink(sinks=[failing_sink, good_sink])
+
+        multi.send_alert("test alert", "corr-x")
+
+        good_sink.send_alert.assert_called_once_with("test alert", "corr-x")
+
+    def test_multi_requires_at_least_one_sink(self) -> None:
+        """Constructing MultiReportSink with an empty list raises ValueError."""
+        with pytest.raises(ValueError, match="at least one sink"):
+            MultiReportSink(sinks=[])
+
+    def test_multi_auto_selects_non_excel_hitl_sink(self, tmp_path: Path) -> None:
+        """When no hitl_sink is provided, MultiReportSink picks the first non-Excel sink."""
+        excel = ExcelReportSink(output_dir=tmp_path)
+        slack_mock = self._make_recording_sink()
+        type(slack_mock).__name__ = "SlackReportSink"  # type: ignore[assignment]
+
+        from firm.domain.enums import ApprovalStatus
+        from firm.ports.types import ApprovalResult
+
+        slack_mock.send_hitl_request.return_value = ApprovalResult(status=ApprovalStatus.PENDING)
+        multi = MultiReportSink(sinks=[excel, slack_mock])
+
+        multi.send_hitl_request(_make_hitl_request())
+
+        slack_mock.send_hitl_request.assert_called_once()

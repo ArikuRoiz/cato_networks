@@ -266,7 +266,7 @@ def _build_pipeline(root: Path, initial_cash: Any) -> tuple[Any, Any, Any]:
     from langgraph.checkpoint.memory import MemorySaver
 
     from firm.adapters.market_data_frozen import FrozenMarketData
-    from firm.adapters.report import FileReportSink
+    from firm.adapters.report import ExcelReportSink, MultiReportSink, SlackReportSink
     from firm.orchestration.graph import build_graph
     from firm.orchestration.nodes import NodePorts
 
@@ -278,13 +278,23 @@ def _build_pipeline(root: Path, initial_cash: Any) -> tuple[Any, Any, Any]:
     evidence_store = _build_evidence_store(root / "data" / "news" / "corpus.json")
     llm = _build_demo_llm(root / "data" / "cassettes" / "eval.jsonl")
     reports_dir = root / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    # SlackReportSink degrades gracefully: without SLACK_BOT_TOKEN it logs the
+    # Block Kit payload instead of calling the API (no network, no crash).
+    report_sink = MultiReportSink(
+        sinks=[
+            ExcelReportSink(output_dir=reports_dir),
+            SlackReportSink(channel=os.getenv("SLACK_CHANNEL", "#trading-desk")),
+        ]
+    )
 
     ports = NodePorts(
         evidence=evidence_store,
         llm=llm,
         market_data=market_data,
         ledger=ledger,
-        report_sink=FileReportSink(output_dir=reports_dir),
+        report_sink=report_sink,
         guardrail=guardrail,
         injection_guard=injection_guard,
         risk_policy=risk_policy_config,
