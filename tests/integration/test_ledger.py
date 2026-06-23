@@ -504,3 +504,120 @@ def test_record_cycle_filled_writes_trade_id_in_payload(migrated_engine: Engine)
         assert payload["trade_id"] == str(trade_id), (
             "Filled cycle must link trade_id in cycle.outcome payload for trace queries"
         )
+
+
+# ---------------------------------------------------------------------------
+# ensure_portfolio — idempotent portfolio seeding
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_portfolio_creates_row(migrated_engine: Engine) -> None:
+    """ensure_portfolio must write a portfolio row with the given cash balance.
+
+    A second call with the same portfolio_id must be a no-op (ON CONFLICT DO NOTHING).
+    """
+    from sqlalchemy.orm import Session
+
+    from firm.persistence.models import PortfolioRow
+
+    repo = LedgerRepository(migrated_engine)
+    portfolio_id = uuid.uuid4()
+    starting_cash = Decimal("100000.00")
+
+    # First call: row is created.
+    repo.ensure_portfolio(portfolio_id, starting_cash)
+
+    with Session(migrated_engine) as session:
+        row = session.get(PortfolioRow, portfolio_id)
+        assert row is not None, "ensure_portfolio must create a PortfolioRow"
+        assert row.cash_balance == starting_cash
+
+    # Second call: no exception, no duplicate row.
+    repo.ensure_portfolio(portfolio_id, starting_cash)
+    with Session(migrated_engine) as session:
+        rows = session.query(PortfolioRow).filter_by(id=portfolio_id).all()
+        assert len(rows) == 1, "ensure_portfolio must be idempotent — no duplicate row"
+
+
+def test_ensure_portfolio_does_not_overwrite_cash(migrated_engine: Engine) -> None:
+    """ensure_portfolio must not reduce cash when the row already exists."""
+    from sqlalchemy.orm import Session
+
+    from firm.persistence.models import PortfolioRow
+
+    repo = LedgerRepository(migrated_engine)
+    portfolio_id = _make_portfolio(migrated_engine, Decimal("200000.00"))
+
+    # Calling with a lower cash value must leave the original row untouched.
+    repo.ensure_portfolio(portfolio_id, Decimal("50000.00"))
+
+    with Session(migrated_engine) as session:
+        row = session.get(PortfolioRow, portfolio_id)
+        assert row is not None
+        assert row.cash_balance == Decimal("200000.00"), (
+            "ensure_portfolio must not overwrite existing cash_balance"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Pending-run registry
+# ---------------------------------------------------------------------------
+
+
+def test_register_and_list_pending_runs(migrated_engine: Engine) -> None:
+    """register_pending_run must write a row; list_pending_runs must return it."""
+    repo = LedgerRepository(migrated_engine)
+    thread_id = f"thread-{uuid.uuid4().hex}"
+    correlation_id = str(uuid.uuid4())
+    symbol = "NVDA"
+
+    repo.register_pending_run(
+        thread_id=thread_id,
+        correlation_id=correlation_id,
+        symbol=symbol,
+    )
+
+    runs = repo.list_pending_runs()
+    matching = [(t, c, s) for t, c, s in runs if t == thread_id]
+    assert len(matching) == 1, f"Expected 1 pending run for {thread_id}, got {matching}"
+    assert matching[0][1] == correlation_id
+    assert matching[0][2] == symbol
+
+
+def test_register_pending_run_idempotent(migrated_engine: Engine) -> None:
+    """Registering the same thread_id twice must not raise — ON CONFLICT DO NOTHING."""
+    repo = LedgerRepository(migrated_engine)
+    thread_id = f"thread-{uuid.uuid4().hex}"
+
+    repo.register_pending_run(
+        thread_id=thread_id, correlation_id=str(uuid.uuid4()), symbol="AAPL"
+    )
+    repo.register_pending_run(
+        thread_id=thread_id, correlation_id=str(uuid.uuid4()), symbol="AAPL"
+    )
+
+    runs = repo.list_pending_runs()
+    matching = [t for t, _, _ in runs if t == thread_id]
+    assert len(matching) == 1, "Duplicate register must produce exactly one row"
+
+
+def test_delete_pending_run_removes_row(migrated_engine: Engine) -> None:
+    """delete_pending_run must remove the row; subsequent list must not include it."""
+    repo = LedgerRepository(migrated_engine)
+    thread_id = f"thread-{uuid.uuid4().hex}"
+
+    repo.register_pending_run(
+        thread_id=thread_id, correlation_id=str(uuid.uuid4()), symbol="MSFT"
+    )
+    repo.delete_pending_run(thread_id)
+
+    runs = repo.list_pending_runs()
+    matching = [t for t, _, _ in runs if t == thread_id]
+    assert matching == [], f"delete_pending_run must remove the row; still found {matching}"
+
+
+def test_delete_nonexistent_pending_run_is_noop(migrated_engine: Engine) -> None:
+    """Deleting a thread_id that does not exist must not raise."""
+    repo = LedgerRepository(migrated_engine)
+    # Must not raise
+    repo.delete_pending_run(f"ghost-{uuid.uuid4().hex}")

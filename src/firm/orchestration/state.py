@@ -58,3 +58,4 @@ class GraphState(TypedDict, total=False):
     verdict: dict[str, Any] | None
     error: str | None
     token_count: int
+    force_buy: bool  # Demo/override: inject synthetic BUY plan, skip LLM research-manager call

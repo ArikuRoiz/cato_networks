@@ -25,6 +25,12 @@ class RunRequest(BaseModel, frozen=True):
 
     tickers: list[str]
     lookback_days: int = 7
+    force_buy: bool = False
+    """Demo/override flag: inject a synthetic high-conviction BUY plan so the
+    pipeline produces a trade above the HITL threshold, guaranteeing a pause
+    for human-in-the-loop approval.  Does NOT affect the real LLM decision
+    path; the flag is clearly named as an override.
+    """
 
     @field_validator("tickers")
     @classmethod
@@ -39,6 +45,11 @@ class RunRequest(BaseModel, frozen=True):
         if v <= 0:
             raise ValueError("lookback_days must be > 0")
         return v
+
+    @property
+    def is_demo(self) -> bool:
+        """True when force_buy override is active."""
+        return self.force_buy
 
 
 class ApprovalRequest(BaseModel, frozen=True):
@@ -192,12 +203,14 @@ class RunStartedDTO:
     thread_ids: list[str]
     tickers: list[str]
     lookback_days: int
+    force_buy: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "thread_ids": self.thread_ids,
             "tickers": self.tickers,
             "lookback_days": self.lookback_days,
+            "force_buy": self.force_buy,
         }
 
 

@@ -181,10 +181,8 @@ class LedgerGuardrail:
         **HITL note** — this method re-runs ``check_trade`` from scratch.  A
         trade that previously triggered ``HITLRequired`` will still be blocked
         here even if a human approved it, because the original oversized
-        proposal is resubmitted unchanged.  Callers **must** resize the trade
-        to a notional below ``hitl_threshold_pct`` (or below
-        ``max_trade_notional_pct``) and re-propose it after HITL approval
-        rather than resubmitting the original size.
+        proposal is resubmitted unchanged.  Use ``enforce_hitl_approved`` when
+        the trade has been explicitly approved by a human operator.
         """
         result = self._risk.check_trade(trade, portfolio, prices, start_of_day_nav)
         match result:
@@ -193,4 +191,35 @@ class LedgerGuardrail:
             case Rejected(reason=reason) | HITLRequired(reason=reason):
                 raise LimitExceeded(
                     f"Ledger guardrail blocked trade {trade.id} ({trade.symbol}): {reason}"
+                )
+
+    def enforce_hitl_approved(
+        self,
+        trade: Trade,
+        portfolio: Portfolio,
+        prices: dict[str, Decimal],
+        start_of_day_nav: Decimal | None = None,
+    ) -> None:
+        """Enforce risk limits for a human-approved (HITL) trade.
+
+        Unlike ``enforce_before_write``, this method accepts ``HITLRequired``
+        as passing — a human operator has already reviewed and approved the
+        oversized proposal.  Hard limits (``Rejected``, e.g. daily halt,
+        max_trade_notional_pct) still apply; only the HITL soft-gate is
+        bypassed.
+
+        Args:
+            trade: The approved-but-oversized trade to validate.
+            portfolio: Current portfolio state for NAV computation.
+            prices: Current market prices keyed by symbol.
+            start_of_day_nav: Optional; enables daily-halt enforcement.
+        """
+        result = self._risk.check_trade(trade, portfolio, prices, start_of_day_nav)
+        match result:
+            case Approved() | HITLRequired():
+                return  # Human approved — HITL soft-gate is already satisfied
+            case Rejected(reason=reason):
+                raise LimitExceeded(
+                    f"Ledger guardrail blocked HITL-approved trade "
+                    f"{trade.id} ({trade.symbol}): {reason}"
                 )

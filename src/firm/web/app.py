@@ -257,12 +257,14 @@ def _register_run_route(app: FastAPI) -> None:
                 ticker,
                 decision_ts,
                 thread_id,
+                body.force_buy,
             )
 
         dto = RunStartedDTO(
             thread_ids=thread_ids,
             tickers=body.tickers,
             lookback_days=body.lookback_days,
+            force_buy=body.force_buy,
         )
         return JSONResponse(dto.to_dict(), status_code=202)
 

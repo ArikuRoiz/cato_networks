@@ -29,6 +29,7 @@ from firm.persistence.models import (
     DecisionCycleRow,
     HoldingRow,
     LotRow,
+    PendingRunRow,
     PortfolioRow,
     TradeRow,
 )
@@ -112,6 +113,75 @@ class LedgerRepository:
 
     def sell(self, trade: Trade, portfolio_id: uuid.UUID) -> Trade:
         return self._run_in_transaction(trade, portfolio_id, _execute_sell)
+
+    def ensure_portfolio(
+        self,
+        portfolio_id: uuid.UUID,
+        starting_cash: Decimal,
+    ) -> None:
+        """Idempotently create a portfolio row if one does not already exist.
+
+        Uses INSERT … ON CONFLICT DO NOTHING so repeated calls are safe.  Call
+        this once at server/pipeline startup so ``GET /api/portfolio`` always
+        finds a row rather than returning zeros.
+
+        Args:
+            portfolio_id: The stable UUID for this portfolio.
+            starting_cash: Initial cash balance (e.g. 100 000).
+        """
+        with Session(self._engine, autobegin=False) as session:
+            session.begin()
+            _insert_portfolio_if_absent(session, portfolio_id, starting_cash)
+            session.commit()
+
+    # ------------------------------------------------------------------
+    # Pending-run registry (web HITL thread tracking)
+    # ------------------------------------------------------------------
+
+    def register_pending_run(
+        self,
+        *,
+        thread_id: str,
+        correlation_id: str,
+        symbol: str,
+    ) -> None:
+        """Record a background graph run so pending_approvals() can find it.
+
+        Idempotent: repeated calls with the same thread_id are silently ignored
+        (ON CONFLICT DO NOTHING at the DB level via a try/except on flush).
+
+        Args:
+            thread_id: LangGraph thread ID used as the checkpoint namespace.
+            correlation_id: Cycle correlation UUID string.
+            symbol: Ticker being analysed.
+        """
+        with Session(self._engine, autobegin=False) as session:
+            session.begin()
+            _insert_pending_run(session, thread_id, correlation_id, symbol)
+            session.commit()
+
+    def delete_pending_run(self, thread_id: str) -> None:
+        """Remove a pending-run entry once the thread has been resumed or completed.
+
+        No-op when the thread_id is not found (safe to call on every resume).
+
+        Args:
+            thread_id: LangGraph thread ID to remove from the registry.
+        """
+        with Session(self._engine, autobegin=False) as session:
+            session.begin()
+            _delete_pending_run(session, thread_id)
+            session.commit()
+
+    def list_pending_runs(self) -> list[tuple[str, str, str]]:
+        """Return all registered pending runs as (thread_id, correlation_id, symbol) tuples.
+
+        Used by pending_approvals() to enumerate threads that may be paused on
+        a HITL interrupt.  Returns an empty list when no runs are registered.
+        """
+        with Session(self._engine) as session:
+            rows = session.execute(select(PendingRunRow)).scalars().all()
+            return [(r.thread_id, r.correlation_id, r.symbol) for r in rows]
 
     def record_approval(
         self,
@@ -567,3 +637,62 @@ def _cycle_outcome_payload(
     if record.trade_id is not None:
         payload["trade_id"] = str(record.trade_id)
     return payload
+
+
+# ---------------------------------------------------------------------------
+# ensure_portfolio + pending_run helpers
+# ---------------------------------------------------------------------------
+
+
+def _insert_portfolio_if_absent(
+    session: Session,
+    portfolio_id: uuid.UUID,
+    starting_cash: Decimal,
+) -> None:
+    """INSERT a PortfolioRow only when the given portfolio_id does not exist.
+
+    SQLAlchemy does not expose ON CONFLICT DO NOTHING natively; we emulate it
+    with a SELECT-then-INSERT pattern inside a single transaction so concurrent
+    callers are safe (the PK constraint acts as the guard at the DB level).
+    """
+    from sqlalchemy import text
+
+    session.execute(
+        text(
+            """
+            INSERT INTO portfolios (id, cash_balance, created_at)
+            VALUES (:id, :cash, NOW())
+            ON CONFLICT (id) DO NOTHING
+            """
+        ),
+        {"id": str(portfolio_id), "cash": str(starting_cash)},
+    )
+
+
+def _insert_pending_run(
+    session: Session,
+    thread_id: str,
+    correlation_id: str,
+    symbol: str,
+) -> None:
+    from sqlalchemy import text
+
+    session.execute(
+        text(
+            """
+            INSERT INTO pending_runs (thread_id, correlation_id, symbol, started_at)
+            VALUES (:tid, :cid, :sym, NOW())
+            ON CONFLICT (thread_id) DO NOTHING
+            """
+        ),
+        {"tid": thread_id, "cid": correlation_id, "sym": symbol},
+    )
+
+
+def _delete_pending_run(session: Session, thread_id: str) -> None:
+    from sqlalchemy import text
+
+    session.execute(
+        text("DELETE FROM pending_runs WHERE thread_id = :tid"),
+        {"tid": thread_id},
+    )

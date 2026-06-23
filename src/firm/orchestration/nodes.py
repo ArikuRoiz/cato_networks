@@ -274,26 +274,60 @@ def _record_hitl_decision(
 ) -> None:
     """Durably record a HITL decision before routing.
 
-    Called on every resume from an interrupt so the firm has an auditable
-    record of every human override regardless of outcome.  Failures are
-    caught and logged — a recording error must never abort the decision path.
+    For the approved path, the ApprovalRow is deferred to execution_node so
+    the FK constraint on approvals.trade_id is satisfied (the trade row must
+    exist first).  For rejected/expired paths, no TradeRow will be created, so
+    we write only a warning log — the cycle-outcome audit written by
+    ``record_cycle`` already captures the rejection durably.
+
+    Failures are caught and logged — a recording error must never abort the
+    decision path.
     """
     if ports.ledger is None:
         return
+    if hitl_status == HITLStatus.APPROVED:
+        # Approved path: trade hasn't been written yet — defer to execution_node,
+        # which calls _record_approval_after_fill_from_state() after ledger.buy().
+        return
+    # Rejected / expired: no trade row will be created.  Log the decision; the
+    # cycle-outcome record (written by the reporting_node via record_cycle) is the
+    # durable audit trail.
+    logger.info(
+        "HITL decision recorded: status=%s correlation_id=%s (not executed)",
+        hitl_status,
+        pending_approved.correlation_id,
+    )
+
+
+def _record_approval_after_fill_from_state(
+    ports: NodePorts,
+    approved: ApprovedTrade,
+    state: GraphState,
+) -> None:
+    """Write ApprovalRow + audit entry AFTER the trade is persisted.
+
+    Called by execution_node after a successful fill so the FK constraint on
+    approvals.trade_id is satisfied.  Reads original notional/qty from the
+    trade_proposal in state (set before the interrupt).  Failures are logged.
+    """
+    if ports.ledger is None:
+        return
+    proposal_raw = state.get("trade_proposal") or {}
+    original_notional = Decimal(str(proposal_raw.get("notional", "0")))
+    original_qty = Decimal(str(proposal_raw.get("qty", "0")))
     try:
         ports.ledger.record_approval(
-            correlation_id=uuid.UUID(pending_approved.correlation_id),
-            trade_id=pending_approved.trade.id,
-            status=hitl_status or "unknown",
-            original_notional=hitl_required.proposal.notional,
-            original_qty=hitl_required.proposal.qty,
+            correlation_id=uuid.UUID(approved.correlation_id),
+            trade_id=approved.trade.id,
+            status=HITLStatus.APPROVED,
+            original_notional=original_notional,
+            original_qty=original_qty,
             decided_at=datetime.now(UTC),
         )
     except Exception:
         logger.exception(
-            "Failed to record HITL decision (correlation_id=%s, status=%r)",
-            pending_approved.correlation_id,
-            hitl_status,
+            "Failed to record HITL approval after fill (correlation_id=%s)",
+            approved.correlation_id,
         )
 
 
@@ -392,15 +426,22 @@ def make_execution_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
 
         trade = approved.trade
         prices = {trade.symbol: trade.requested_price}
+        # hitl_status is set when a human operator explicitly approved the trade
+        # via the HITL interrupt path.  In that case the guardrail uses the HITL-
+        # aware enforcement that accepts oversized proposals the human cleared.
+        hitl_approved = state.get("hitl_status") == HITLStatus.APPROVED
         inp = ExecutionInput(
             approved_trade=approved,
             portfolio_id=ports.portfolio_id,
             portfolio=ports.portfolio,
             prices=prices,
             correlation_id=correlation_id,
+            hitl_approved=hitl_approved,
         )
         result = agent.run(inp)
         if isinstance(result, Fill):
+            if hitl_approved:
+                _record_approval_after_fill_from_state(ports, approved, state)
             return {"cycle_outcome": CycleOutcome.FILLED}
         return {"cycle_outcome": CycleOutcome.ERROR, "error": result.reason}
 
@@ -560,6 +601,13 @@ def make_research_manager_node(ports: NodePorts) -> Callable[[GraphState], dict[
     def research_manager_node(state: GraphState) -> dict[str, Any]:
         symbol = state.get("symbol", "")
         correlation_id = state.get("correlation_id", "")
+
+        # Demo/override: when force_buy is set, skip the LLM call and inject a
+        # synthetic high-conviction BUY plan so the pm_node sizes a large enough
+        # position to cross the HITL threshold (conviction=1.0 → 10% NAV).
+        if state.get("force_buy"):
+            return {"research_plan": _forced_buy_plan(symbol, correlation_id)}
+
         inp = ResearchManagerInput(
             symbol=symbol,
             correlation_id=correlation_id,
@@ -580,6 +628,24 @@ def make_research_manager_node(ports: NodePorts) -> Callable[[GraphState], dict[
         return {"research_plan": result.model_dump(mode="json")}
 
     return research_manager_node
+
+
+def _forced_buy_plan(symbol: str, correlation_id: str) -> dict[str, Any]:
+    """Return a synthetic ResearchPlan dict for the HITL demo/override path.
+
+    Conviction 1.0 with max_trade_notional_pct=0.10 produces a 10% NAV trade
+    (~$10 000 on a $100 000 portfolio) — well above the 5% HITL threshold.
+    This is clearly named as an override and does NOT affect the default path.
+    """
+    return {
+        "symbol": symbol,
+        "correlation_id": correlation_id,
+        "recommendation": "strong_buy",
+        "conviction": 1.0,
+        "bull_summary": "DEMO: forced BUY override for HITL end-to-end testing.",
+        "bear_summary": "DEMO: no bear case — this is a synthetic override.",
+        "rationale": "DEMO/FORCE-BUY override — synthetic plan for HITL end-to-end testing",
+    }
 
 
 # ---------------------------------------------------------------------------

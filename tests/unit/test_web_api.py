@@ -418,3 +418,69 @@ def test_dashboard_returns_html(client: TestClient) -> None:
     assert resp.status_code == 200
     assert "AI Investment Firm" in resp.text
     assert "portfolio" in resp.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# force_buy flag on RunRequest + RunStartedDTO
+# ---------------------------------------------------------------------------
+
+
+def test_run_request_force_buy_defaults_false() -> None:
+    req = RunRequest(tickers=["NVDA"], lookback_days=7)
+    assert req.force_buy is False
+    assert req.is_demo is False
+
+
+def test_run_request_force_buy_can_be_set() -> None:
+    req = RunRequest(tickers=["NVDA"], lookback_days=7, force_buy=True)
+    assert req.force_buy is True
+    assert req.is_demo is True
+
+
+def test_run_with_force_buy_returns_flag_in_response(client_with_live_graph: TestClient) -> None:
+    resp = client_with_live_graph.post(
+        "/api/run",
+        json={"tickers": ["NVDA"], "lookback_days": 7, "force_buy": True},
+    )
+    assert resp.status_code == 202
+    data = resp.json()
+    assert data["force_buy"] is True
+    assert len(data["thread_ids"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# pending_approvals with registry-based mock
+# ---------------------------------------------------------------------------
+
+
+def test_pending_approvals_uses_registry(client_with_live_graph: TestClient) -> None:
+    """GET /api/approvals/pending returns an empty list when registry is empty."""
+    with patch("firm.web.runtime.pending_approvals") as mock_pa:
+        mock_pa.return_value = []
+        resp = client_with_live_graph.get("/api/approvals/pending")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_pending_approvals_returns_interrupted_thread(client_with_live_graph: TestClient) -> None:
+    """GET /api/approvals/pending surfaces a real interrupt payload."""
+    from firm.web.runtime import InterruptedThread
+
+    thread_id = str(uuid.uuid4())
+    fake_interrupts = [
+        InterruptedThread(
+            thread_id=thread_id,
+            correlation_id=str(uuid.uuid4()),
+            symbol="NVDA",
+            notional="10000",
+            interrupt_payload={"type": "hitl_request", "trade_proposal": {"notional": 10000}},
+        )
+    ]
+    with patch("firm.web.runtime.pending_approvals", return_value=fake_interrupts):
+        resp = client_with_live_graph.get("/api/approvals/pending")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["symbol"] == "NVDA"
+    assert data[0]["thread_id"] == thread_id
+    assert data[0]["notional"] == "10000"

@@ -23,7 +23,13 @@ class ExecutionAgent(BaseAgent[ExecutionInput, Fill | ExecutionFailure]):
     def run(self, inp: ExecutionInput) -> Fill | ExecutionFailure:
         trade = inp.approved_trade.trade
         try:
-            self._guardrail.enforce_before_write(trade, inp.portfolio, inp.prices)
+            if inp.hitl_approved:
+                # Human explicitly reviewed and approved this oversized trade.
+                # Use the HITL-aware guardrail so the soft HITL threshold is not
+                # re-applied; hard limits (max_trade_notional_pct, daily halt) still hold.
+                self._guardrail.enforce_hitl_approved(trade, inp.portfolio, inp.prices)
+            else:
+                self._guardrail.enforce_before_write(trade, inp.portfolio, inp.prices)
         except LimitExceeded as exc:
             return ExecutionFailure(reason=str(exc), retryable=False)
 

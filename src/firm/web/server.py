@@ -18,6 +18,8 @@ import os
 import uuid
 from pathlib import Path
 
+_DEFAULT_STARTING_CASH = "100000"
+
 
 def run_server(host: str = "0.0.0.0", port: int = 8000, reload: bool = False) -> None:
     """Wire DB + live graph, inject into the app, then start uvicorn."""
@@ -26,7 +28,6 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, reload: bool = False) ->
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
     engine = _build_engine(database_url)
-    portfolio_id = _resolve_portfolio_id(engine)
 
     live_graph = None
     if anthropic_key:
@@ -35,9 +36,14 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, reload: bool = False) ->
             from firm.web.runtime import build_live_graph
 
             settings = load_settings()
+            # build_live_graph calls ensure_portfolio internally, resolves stable ID.
             live_graph = build_live_graph(settings)
+            portfolio_id = live_graph.portfolio_id
         except Exception as exc:
             print(f"[web] Live graph unavailable ({exc}); HITL endpoints disabled.")
+            portfolio_id = _resolve_or_seed_portfolio_id(engine)
+    else:
+        portfolio_id = _resolve_or_seed_portfolio_id(engine)
 
     from firm.web.app import configure, create_app
 
@@ -76,13 +82,27 @@ def _build_engine(database_url: str) -> object:
     return create_engine(to_sqlalchemy_url(database_url))
 
 
-def _resolve_portfolio_id(engine: object) -> uuid.UUID:
-    """Return the first portfolio_id found in the DB, or a fresh UUID.
+def _resolve_or_seed_portfolio_id(engine: object) -> uuid.UUID:
+    """Return the existing portfolio_id or create a new one with starting cash.
 
-    A real deployment would have exactly one portfolio.  This gracefully
-    handles a fresh database (no portfolio yet) by returning a new UUID —
-    the portfolio card will show zeros until the first ``make seed`` or ``POST /api/run``.
+    Ensures the portfolio row exists in the DB so GET /api/portfolio always
+    returns real NAV instead of zeros.
     """
+    from decimal import Decimal
+
+    from firm.persistence.ledger import LedgerRepository
+
+    portfolio_id = _resolve_portfolio_id(engine)
+    try:
+        ledger = LedgerRepository(engine)  # type: ignore[arg-type]
+        ledger.ensure_portfolio(portfolio_id, Decimal(_DEFAULT_STARTING_CASH))
+    except Exception as exc:
+        print(f"[web] Could not ensure portfolio row ({exc}); continuing.")
+    return portfolio_id
+
+
+def _resolve_portfolio_id(engine: object) -> uuid.UUID:
+    """Return the first portfolio_id found in the DB, or a fresh UUID."""
     try:
         from sqlalchemy import text
         from sqlalchemy.engine import Engine

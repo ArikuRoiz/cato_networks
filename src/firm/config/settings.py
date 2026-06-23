@@ -187,6 +187,8 @@ class Settings:
     anthropic_api_key: str
     slack_bot_token: str
     slack_channel: str
+    telegram_bot_token: str
+    telegram_chat_id: str
     langfuse_public_key: str
     langfuse_secret_key: str
     otel_endpoint: str
@@ -199,6 +201,15 @@ class Settings:
     @property
     def has_slack(self) -> bool:
         return bool(self.slack_bot_token)
+
+    @property
+    def has_telegram(self) -> bool:
+        """True only when both token and chat_id are present and non-placeholder."""
+        return (
+            bool(self.telegram_bot_token)
+            and not self.telegram_bot_token.endswith("...")
+            and bool(self.telegram_chat_id)
+        )
 
     @property
     def has_langfuse(self) -> bool:
@@ -221,6 +232,8 @@ def load_settings() -> Settings:
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         slack_bot_token=os.environ.get("SLACK_BOT_TOKEN", ""),
         slack_channel=os.environ.get("SLACK_CHANNEL", "#trading-desk"),
+        telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+        telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
         langfuse_public_key=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
         langfuse_secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
         otel_endpoint=os.environ.get(

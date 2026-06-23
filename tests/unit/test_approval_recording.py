@@ -150,11 +150,17 @@ def _make_ports_with_fake_ledger(hitl_threshold_pct: float = 0.05) -> object:
 
 @pytest.mark.parametrize("hitl_status", ["approved", "rejected", "expired"])
 def test_risk_node_resume_records_hitl_decision(hitl_status: str) -> None:
-    """Resuming the HITL interrupt path records an ApprovalRecord in the ledger.
+    """Resuming the HITL interrupt path in risk_node does not write an ApprovalRow.
 
-    Uses a minimal inject→risk graph with MemorySaver so the interrupt/resume
-    cycle exercises the production code path.  The _FakeLedger captures the
-    call without a real DB.
+    Design change: ApprovalRow persistence is deferred out of risk_node to avoid
+    a FK violation (the TradeRow does not exist yet at interrupt time):
+
+      - approved  → ApprovalRow is written by execution_node AFTER ledger.buy()
+      - rejected  → no ApprovalRow (only a log line); cycle record is the audit trail
+      - expired   → same as rejected
+
+    This test verifies that risk_node does NOT write an approval in any of the
+    three cases, preserving the risk_node's role as interrupt-and-route-only.
     """
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.constants import END, START
@@ -209,18 +215,15 @@ def test_risk_node_resume_records_hitl_decision(hitl_status: str) -> None:
     assert interrupt_events, "Expected HITL interrupt"
     assert len(ledger.approvals) == 0, "No approval must be written before resume"
 
-    # Resume with the given hitl_status — approval must be recorded.
+    # Resume with the given hitl_status.
     resume_cmd = Command(
         resume={"decision": hitl_status},
         update={"hitl_status": hitl_status},
     )
     list(mini_graph.stream(resume_cmd, config, stream_mode="updates"))
 
-    assert len(ledger.approvals) == 1, (
-        f"Expected exactly 1 approval record after resume with status={hitl_status!r}"
+    # risk_node must NOT write an ApprovalRow — see docstring for the three cases.
+    assert len(ledger.approvals) == 0, (
+        f"risk_node must not write an ApprovalRow (status={hitl_status!r}); "
+        "approved → deferred to execution_node; rejected/expired → log only."
     )
-    rec = ledger.approvals[0]
-    assert rec.status == hitl_status
-    assert rec.original_qty == Decimal("10")
-    assert rec.original_notional == Decimal("1000")
-    assert rec.decided_by == "risk_committee"

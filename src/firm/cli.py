@@ -546,12 +546,16 @@ def _cmd_run(args: argparse.Namespace) -> None:
     root = _project_root()
     tickers = _parse_tickers(args.tickers)
     lookback_days: int = args.lookback_days
+    hitl_channel: str = getattr(args, "hitl", "auto")
+    force_buy: bool = getattr(args, "force_buy", False)
 
     _emit(
         {
             "event": "run_start",
             "tickers": tickers,
             "lookback_days": lookback_days,
+            "hitl_channel": hitl_channel,
+            "force_buy": force_buy,
             "ts": datetime.now(tz=UTC).isoformat(),
         }
     )
@@ -563,7 +567,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
     graph, _portfolio, _portfolio_id = _build_live_pipeline(root, Decimal("100000"), settings)
     decision_ts = datetime.now(tz=UTC)
-    _run_live_graph_loop(graph, tickers, decision_ts, settings)
+    _run_live_graph_loop(graph, tickers, decision_ts, settings, hitl_channel, force_buy)
 
     _emit({"event": "run_done", "ts": datetime.now(tz=UTC).isoformat()})
 
@@ -730,10 +734,42 @@ def _run_live_graph_loop(
     tickers: list[str],
     decision_ts: datetime,
     settings: Settings,
+    hitl_channel: str = "auto",
+    force_buy: bool = False,
 ) -> None:
-    """Invoke the graph once per ticker, handling HITL interrupts via console input."""
+    """Invoke the graph once per ticker, handling HITL interrupts.
+
+    The HITL surface is selected by *hitl_channel*:
+      - ``"auto"``     — telegram when settings.has_telegram, else console.
+      - ``"telegram"`` — always Telegram (dry-run mode if credentials absent).
+      - ``"console"``  — always interactive stdin.
+    """
+    hitl_sink = _build_hitl_sink(hitl_channel, settings)
     for symbol in tickers:
-        _invoke_live_symbol(graph, symbol, decision_ts, settings)
+        _invoke_live_symbol(graph, symbol, decision_ts, settings, hitl_sink, force_buy)
+
+
+def _build_hitl_sink(hitl_channel: str, settings: Settings) -> Any:
+    """Construct the appropriate HITL sink based on *hitl_channel* and settings.
+
+    Returns a ``TelegramHITL`` or ``None`` (None → fall back to console prompt).
+    """
+    from firm.adapters.telegram import TelegramHITL
+
+    if hitl_channel == "console":
+        return None
+    if hitl_channel == "telegram":
+        return TelegramHITL(
+            token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+        )
+    # "auto": use Telegram when credentials are present, else console
+    if settings.has_telegram:
+        return TelegramHITL(
+            token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+        )
+    return None
 
 
 def _invoke_live_symbol(
@@ -741,8 +777,16 @@ def _invoke_live_symbol(
     symbol: str,
     decision_ts: datetime,
     settings: Settings,
+    hitl_sink: Any = None,
+    force_buy: bool = False,
 ) -> None:
-    """Stream the graph for one symbol; block on HITL interrupts for console approval."""
+    """Stream the graph for one symbol; block on HITL interrupts.
+
+    When *hitl_sink* is a ``TelegramHITL`` instance the HITL decision is routed
+    through Telegram long-polling.  When *hitl_sink* is None the console prompt
+    is used.  *force_buy* injects a synthetic BUY plan (demo override) so a
+    trade > 5% NAV reliably fires the HITL interrupt.
+    """
     import uuid
 
     from langgraph.types import Command
@@ -761,22 +805,25 @@ def _invoke_live_symbol(
     )
     token = set_correlation_id(correlation_id)
     try:
-        initial_state = {
+        initial_state: dict[str, Any] = {
             "symbol": symbol,
             "decision_ts": decision_ts.isoformat(),
             "correlation_id": correlation_id,
         }
+        if force_buy:
+            initial_state["force_buy"] = True
+
         config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
 
         # Stream events; stop on the first interrupt or when the graph ends.
         final_state: dict[str, Any] = {}
         while True:
-            interrupted = False
-            interrupt_payload: dict[str, Any] = {}
             for event in graph.stream(initial_state, config=config, stream_mode="values"):
                 final_state = event
             # Check whether the graph halted on an interrupt by querying state.
             run_state = graph.get_state(config)
+            interrupted = False
+            interrupt_payload: dict[str, Any] = {}
             if run_state.next and run_state.tasks:
                 for task in run_state.tasks:
                     if getattr(task, "interrupts", None):
@@ -787,16 +834,14 @@ def _invoke_live_symbol(
             if not interrupted:
                 break
 
-            # Console HITL: block until the operator responds.
-            resume_value, hitl_status = _console_hitl_prompt(symbol, interrupt_payload)
-            # Resume the graph with the operator decision.
-            # Command is typed generically; cast to Any so we can pass it
-            # to graph.stream() which accepts Any input after an interrupt.
+            # Route to the configured HITL surface.
+            resume_value, hitl_status = _resolve_hitl_decision(
+                symbol, interrupt_payload, correlation_id, hitl_sink
+            )
             resume_cmd: Any = Command(
                 resume=resume_value,
                 update={"hitl_status": hitl_status},
             )
-            # Re-invoke with the command directly (LangGraph resumes from checkpoint).
             for event in graph.stream(resume_cmd, config=config, stream_mode="values"):
                 final_state = event
             break  # single HITL per cycle
@@ -813,6 +858,61 @@ def _invoke_live_symbol(
         )
     finally:
         reset_correlation_id(token)
+
+
+def _resolve_hitl_decision(
+    symbol: str,
+    interrupt_payload: dict[str, Any],
+    correlation_id: str,
+    hitl_sink: Any,
+) -> tuple[str, str]:
+    """Route the HITL decision to Telegram or console; return (resume_value, hitl_status)."""
+    from firm.adapters.telegram import TelegramHITL
+
+    if isinstance(hitl_sink, TelegramHITL):
+        return _telegram_hitl_decision(interrupt_payload, correlation_id, hitl_sink)
+    return _console_hitl_prompt(symbol, interrupt_payload)
+
+
+def _telegram_hitl_decision(
+    interrupt_payload: dict[str, Any],
+    correlation_id: str,
+    hitl_sink: Any,
+) -> tuple[str, str]:
+    """Build a HITLRequest from the interrupt payload and block on Telegram approval."""
+    import uuid
+    from datetime import timedelta
+    from decimal import Decimal
+
+    from firm.domain.enums import HITLStatus
+    from firm.ports.types import HITLRequest
+
+    proposal = interrupt_payload.get("trade_proposal") or {}
+    expires_at = datetime.now(tz=UTC) + timedelta(minutes=10)
+    req = HITLRequest(
+        trade_id=uuid.UUID(str(proposal.get("id", uuid.uuid4()))),
+        symbol=str(proposal.get("symbol", "?")),
+        side=str(proposal.get("side", "buy")),
+        qty_str=str(proposal.get("qty", "0")),
+        notional=Decimal(str(proposal.get("notional", "0"))),
+        reason=str(proposal.get("rationale", "Risk Committee review required")),
+        expires_at=expires_at,
+        correlation_id=correlation_id,
+    )
+    result = hitl_sink.send_hitl_request(req)
+    _emit(
+        {
+            "event": "hitl_telegram_decision",
+            "correlation_id": correlation_id,
+            "status": result.status,
+        }
+    )
+    if result.status == HITLStatus.APPROVED:
+        return ("approved", HITLStatus.APPROVED)
+    if result.status == HITLStatus.REJECTED:
+        return ("rejected", HITLStatus.REJECTED)
+    # EXPIRED or any other status → fail-safe rejection
+    return ("rejected", HITLStatus.EXPIRED)
 
 
 def _console_hitl_prompt(
@@ -1047,6 +1147,28 @@ def _add_run_subcommand(sub: Any) -> None:
         dest="lookback_days",
         metavar="N",
         help=f"Number of calendar days of market data + news to pull (default: {_DEFAULT_LOOKBACK_DAYS}).",
+    )
+    run_p.add_argument(
+        "--hitl",
+        choices=["console", "telegram", "auto"],
+        default="auto",
+        dest="hitl",
+        help=(
+            "HITL approval channel: 'console' = interactive stdin prompt, "
+            "'telegram' = Telegram bot (requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env), "
+            "'auto' = telegram when token is set, else console (default: auto)."
+        ),
+    )
+    run_p.add_argument(
+        "--force-buy",
+        action="store_true",
+        default=False,
+        dest="force_buy",
+        help=(
+            "DEMO OVERRIDE: inject a synthetic high-conviction BUY plan that sizes a trade "
+            "> 5%% NAV, guaranteeing a HITL interrupt through the real graph. "
+            "Does not affect default behaviour; intended for end-to-end HITL testing only."
+        ),
     )
 
 

@@ -89,3 +89,67 @@ replay. The ledger is a concrete Postgres repository — tested against a real d
 | Daily-loss halt | −3% NAV |
 | HITL threshold | 5% NAV |
 | Slippage + commission | 5 bps + $0.005/share |
+
+---
+
+## Telegram HITL — setup and local test
+
+Large trades (> 5% NAV) pause the graph and await a human approve/reject decision.
+The Telegram adapter delivers the request as an inline keyboard message and
+long-polls for the tap.
+
+### 1. Create the bot (@BotFather)
+
+```
+/start
+/newbot
+→ choose a name, e.g. "My Risk Committee Bot"
+→ copy the token: 123456789:ABC-defGhi...
+```
+
+### 2. Get your chat ID
+
+Send any message to the bot, then call:
+
+```bash
+curl "https://api.telegram.org/bot<TOKEN>/getUpdates"
+# Look for "chat":{"id":<YOUR_CHAT_ID>} in the response.
+# For a private chat the ID is a positive integer; for groups it starts with -100.
+```
+
+Alternatively, message @userinfobot — it replies with your personal chat ID.
+
+### 3. Add to .env
+
+```
+TELEGRAM_BOT_TOKEN=123456789:ABC-defGhi...
+TELEGRAM_CHAT_ID=-100123456789
+```
+
+### 4. Run the HITL end-to-end test locally
+
+```bash
+firm run --force-buy --hitl telegram --tickers NVDA
+```
+
+What happens:
+- `--force-buy` injects a synthetic conviction=1.0 BUY plan (skips LLM call in
+  research-manager node) that sizes a ~10% NAV trade — well above the 5% threshold.
+- The graph's risk node fires a genuine `interrupt()` (LangGraph checkpoint).
+- The CLI builds a `HITLRequest` from the interrupt payload and calls
+  `TelegramHITL.send_hitl_request(...)`.
+- A message with **Approve / Reject / Edit qty** buttons appears in your Telegram chat.
+- Tap a button; the bot answers the callback and resumes the graph with your decision.
+- On timeout (10 min default) the trade is auto-rejected (EXPIRED, fail-safe).
+
+Without `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` the adapter runs in dry-run mode:
+payloads are logged at INFO level, the graph receives EXPIRED, and the trade is
+rejected — no crash, no blocking.
+
+### 5. Fallback to console
+
+```bash
+firm run --force-buy --hitl console --tickers NVDA
+```
+
+Prompts `Decision > [a]pprove [r]eject [e]dit <qty>` on stdin.

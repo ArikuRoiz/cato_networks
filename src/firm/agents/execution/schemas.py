@@ -18,6 +18,11 @@ class ExecutionInput(BaseModel):
     portfolio: Portfolio
     prices: dict[str, Decimal]
     correlation_id: str
+    hitl_approved: bool = False
+    """When True the trade was explicitly reviewed and approved by a human
+    operator (HITL path).  The execution agent uses ``enforce_hitl_approved``
+    instead of ``enforce_before_write`` so the HITL soft-gate is not re-applied
+    at the ledger boundary (the human already cleared it)."""
 
     model_config = {"frozen": True}
 

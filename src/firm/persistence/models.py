@@ -172,6 +172,39 @@ class DecisionCycleRow(Base):
 
 
 # ---------------------------------------------------------------------------
+# EvidenceRow — links news evidence to decision cycles
+# ---------------------------------------------------------------------------
+
+
+# (EvidenceRow is managed by PgvectorEvidenceStore outside Alembic — not mirrored here)
+
+
+# ---------------------------------------------------------------------------
+# PendingRunRow — registry for active web HITL threads
+# ---------------------------------------------------------------------------
+
+
+class PendingRunRow(Base):
+    """One row per background graph run started via POST /api/run.
+
+    Records thread_id + correlation_id + symbol so pending_approvals() can
+    enumerate paused threads without relying on PostgresSaver.list_namespaces().
+    Rows are deleted when the thread resumes (approve/reject) or completes.
+    """
+
+    __tablename__ = "pending_runs"
+
+    thread_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (Index("ix_pending_runs_started_at", "started_at"),)
+
+
+# ---------------------------------------------------------------------------
 # AuditLogRow — append-only (no update/delete methods exposed on this model)
 # ---------------------------------------------------------------------------
 
