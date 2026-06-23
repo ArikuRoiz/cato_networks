@@ -228,11 +228,14 @@ def make_risk_node(
             # Pre-build the ApprovedTrade so idempotency_key/UUID are stable
             # across the interrupt boundary.  The serialised form is passed to
             # the interrupt payload so the resume handler can reconstruct it.
+            # research_plan is included so the Telegram card can show human-
+            # readable rationale / pros / cons rather than a raw machine string.
             pending_approved = _build_approved_from_hitl(risk_result, correlation_id)
             interrupt(
                 {
                     "type": "hitl_request",
                     "trade_proposal": proposal_raw,
+                    "research_plan": state.get("research_plan"),
                     "approved_trade": pending_approved.model_dump(mode="json"),
                 }
             )

@@ -13,6 +13,10 @@ run    -- LIVE production run: pull real market data + news for the last N
           days, run the 11-node graph against Postgres, and write a daily
           report. Requires Docker (make up), make seed, and a .env with
           ANTHROPIC_API_KEY + DATABASE_URL.
+bot    -- Start the Telegram bot service. Operator types /run TICKER in the
+          chat; the bot runs the live pipeline, sends a rich approval card on
+          HITL interrupt, and reports back the fill + memo. Requires
+          TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env (plus all live deps).
 trace  -- Print the audit log for a single trade from the database,
           identified by --trade-id (UUID). Outputs NDJSON to stdout.
 
@@ -895,6 +899,7 @@ def _telegram_hitl_decision(
     from firm.ports.types import HITLRequest
 
     proposal = interrupt_payload.get("trade_proposal") or {}
+    research_plan = interrupt_payload.get("research_plan") or {}
     expires_at = datetime.now(tz=UTC) + timedelta(minutes=10)
     req = HITLRequest(
         trade_id=uuid.UUID(str(proposal.get("id", uuid.uuid4()))),
@@ -905,6 +910,15 @@ def _telegram_hitl_decision(
         reason=str(proposal.get("rationale", "Risk Committee review required")),
         expires_at=expires_at,
         correlation_id=correlation_id,
+        recommendation=str(research_plan["recommendation"])
+        if research_plan.get("recommendation")
+        else None,
+        conviction=float(research_plan["conviction"])
+        if research_plan.get("conviction") is not None
+        else None,
+        rationale=str(research_plan["rationale"]) if research_plan.get("rationale") else None,
+        bull_case=str(research_plan["bull_summary"]) if research_plan.get("bull_summary") else None,
+        bear_case=str(research_plan["bear_summary"]) if research_plan.get("bear_summary") else None,
     )
     result = hitl_sink.send_hitl_request(req)
     _emit(
@@ -963,6 +977,54 @@ def _parse_hitl_response(raw: str) -> tuple[str, str]:
         if qty_str.replace(".", "").isdigit():
             return (f"edit:{qty_str}", HITLStatus.APPROVED)
     return ("rejected", HITLStatus.REJECTED)
+
+
+# ---------------------------------------------------------------------------
+# bot command (Telegram operator interface)
+# ---------------------------------------------------------------------------
+
+
+def _cmd_bot(args: argparse.Namespace) -> None:
+    """Start the Telegram bot service (blocking — press Ctrl+C to stop).
+
+    Prerequisites (same as 'firm run'):
+      - ``make up``   — Postgres + pgvector running.
+      - ``make seed`` — migrations applied, tables exist.
+      - ``.env``      — ANTHROPIC_API_KEY, DATABASE_URL,
+                        TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+    """
+    from decimal import Decimal
+
+    root = _project_root()
+    settings = _load_settings()
+    _validate_live_settings(settings)
+    _validate_telegram_settings(settings)
+
+    _emit(
+        {
+            "event": "bot_start",
+            "ts": datetime.now(tz=UTC).isoformat(),
+        }
+    )
+
+    graph, _portfolio, _portfolio_id = _build_live_pipeline(root, Decimal("100000"), settings)
+
+    from firm.bot.service import build_bot_service
+
+    bot = build_bot_service(settings=settings, graph=graph)
+    try:
+        bot.run()
+    except KeyboardInterrupt:
+        _emit({"event": "bot_stop", "ts": datetime.now(tz=UTC).isoformat()})
+
+
+def _validate_telegram_settings(settings: Settings) -> None:
+    """Raise SystemExit with a clear message when Telegram credentials are absent."""
+    if not settings.has_telegram:
+        raise SystemExit(
+            "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required for 'firm bot'. "
+            "Add them to .env or export before running."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1091,6 +1153,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_demo_subcommand(sub)
     _add_dev_subcommand(sub)
     _add_run_subcommand(sub)
+    _add_bot_subcommand(sub)
     _add_trace_subcommand(sub)
     _add_web_subcommand(sub)
     return parser
@@ -1193,6 +1256,18 @@ def _add_trace_subcommand(sub: Any) -> None:
     )
 
 
+def _add_bot_subcommand(sub: Any) -> None:
+    """Register the 'bot' subcommand (Telegram operator interface)."""
+    sub.add_parser(
+        "bot",
+        help=(
+            "Start the Telegram bot service. Operator types /run TICKER; the bot runs "
+            "the live pipeline, sends a rich HITL approval card, and reports back the "
+            "fill + memo. Requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env."
+        ),
+    )
+
+
 def _add_web_subcommand(sub: Any) -> None:
     """Register the 'web' subcommand (browser dashboard)."""
     web_p = sub.add_parser(
@@ -1242,6 +1317,7 @@ def main() -> None:
         "demo": _cmd_demo,
         "dev": _cmd_dev,
         "run": _cmd_run,
+        "bot": _cmd_bot,
         "trace": _cmd_trace,
         "web": _cmd_web,
     }

@@ -1,4 +1,4 @@
-.PHONY: test lint eval up down logs seed demo dev trace prod prod-demo prod-seed prod-logs prod-down build
+.PHONY: test lint eval up down logs seed demo dev trace bot prod prod-demo prod-seed prod-logs prod-down build
 
 TRADE ?= ""
 
@@ -29,6 +29,9 @@ trace:
 
 web:
 	uv run python -m firm.cli web
+
+bot:
+	uv run python -m firm.cli bot
 
 # ---------------------------------------------------------------------------
 # Docker infra only (Postgres + Langfuse, no app container)

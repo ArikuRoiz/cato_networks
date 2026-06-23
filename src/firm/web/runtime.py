@@ -355,9 +355,7 @@ def _extract_interrupt(
         interrupts = getattr(task, "interrupts", None)
         if interrupts:
             payload: dict[str, Any] = interrupts[0].value if interrupts else {}
-            return _build_interrupted_thread(
-                thread_id, run_state, payload, correlation_id, symbol
-            )
+            return _build_interrupted_thread(thread_id, run_state, payload, correlation_id, symbol)
     return None
 
 

@@ -215,7 +215,9 @@ class TelegramHITL:
     def _answer_callback(self, callback_query_id: str, text: str) -> None:
         """Call answerCallbackQuery to clear the button spinner."""
         try:
-            self._call("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text})
+            self._call(
+                "answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text}
+            )
         except Exception:
             logger.exception("TelegramHITL: answerCallbackQuery failed")
 
@@ -333,7 +335,11 @@ def _parse_callback_update(raw: dict[str, object]) -> _CallbackUpdate | None:
     data = cq.get("data")
     from_info = cq.get("from") or {}
     username = from_info.get("username") if isinstance(from_info, dict) else None
-    if not isinstance(update_id, int) or not isinstance(callback_query_id, str) or not isinstance(data, str):
+    if (
+        not isinstance(update_id, int)
+        or not isinstance(callback_query_id, str)
+        or not isinstance(data, str)
+    ):
         return None
     return _CallbackUpdate(
         update_id=update_id,

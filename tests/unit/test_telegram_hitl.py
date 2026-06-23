@@ -127,12 +127,14 @@ class TestSendMessagePayload:
         req = _make_req(correlation_id=cid)
 
         # sendMessage → ok; getUpdates immediately returns matching approve
-        http = _make_http_client([
-            {"ok": True, "result": {"message_id": 1}},                     # sendMessage
-            {"ok": True, "result": [_callback_update("approve", cid)]},    # getUpdates
-            {"ok": True, "result": {}},                                     # answerCallbackQuery
-            {"ok": True, "result": {"message_id": 2}},                     # confirmation sendMessage
-        ])
+        http = _make_http_client(
+            [
+                {"ok": True, "result": {"message_id": 1}},  # sendMessage
+                {"ok": True, "result": [_callback_update("approve", cid)]},  # getUpdates
+                {"ok": True, "result": {}},  # answerCallbackQuery
+                {"ok": True, "result": {"message_id": 2}},  # confirmation sendMessage
+            ]
+        )
         hitl = TelegramHITL(token="123:REAL", chat_id="-100123", http_client=http)
         hitl.send_hitl_request(req)
 
@@ -145,12 +147,14 @@ class TestSendMessagePayload:
         cid = str(uuid.uuid4())
         req = _make_req(correlation_id=cid)
 
-        http = _make_http_client([
-            {"ok": True, "result": {"message_id": 1}},
-            {"ok": True, "result": [_callback_update("reject", cid)]},
-            {"ok": True, "result": {}},
-            {"ok": True, "result": {"message_id": 2}},
-        ])
+        http = _make_http_client(
+            [
+                {"ok": True, "result": {"message_id": 1}},
+                {"ok": True, "result": [_callback_update("reject", cid)]},
+                {"ok": True, "result": {}},
+                {"ok": True, "result": {"message_id": 2}},
+            ]
+        )
         hitl = TelegramHITL(token="123:REAL", chat_id="-100123", http_client=http)
         hitl.send_hitl_request(req)
 
@@ -180,12 +184,14 @@ class TestPollApproved:
         cid = str(uuid.uuid4())
         req = _make_req(correlation_id=cid)
 
-        http = _make_http_client([
-            {"ok": True, "result": {"message_id": 1}},
-            {"ok": True, "result": [_callback_update("approve", cid)]},
-            {"ok": True, "result": {}},
-            {"ok": True, "result": {"message_id": 2}},
-        ])
+        http = _make_http_client(
+            [
+                {"ok": True, "result": {"message_id": 1}},
+                {"ok": True, "result": [_callback_update("approve", cid)]},
+                {"ok": True, "result": {}},
+                {"ok": True, "result": {"message_id": 2}},
+            ]
+        )
         hitl = TelegramHITL(token="123:REAL", chat_id="-100123", http_client=http)
         result = hitl.send_hitl_request(req)
 
@@ -196,12 +202,14 @@ class TestPollApproved:
         cid = str(uuid.uuid4())
         req = _make_req(correlation_id=cid)
 
-        http = _make_http_client([
-            {"ok": True, "result": {"message_id": 1}},
-            {"ok": True, "result": [_callback_update("reject", cid)]},
-            {"ok": True, "result": {}},
-            {"ok": True, "result": {"message_id": 2}},
-        ])
+        http = _make_http_client(
+            [
+                {"ok": True, "result": {"message_id": 1}},
+                {"ok": True, "result": [_callback_update("reject", cid)]},
+                {"ok": True, "result": {}},
+                {"ok": True, "result": {"message_id": 2}},
+            ]
+        )
         hitl = TelegramHITL(token="123:REAL", chat_id="-100123", http_client=http)
         result = hitl.send_hitl_request(req)
 
@@ -211,12 +219,14 @@ class TestPollApproved:
         cid = str(uuid.uuid4())
         req = _make_req(correlation_id=cid)
 
-        http = _make_http_client([
-            {"ok": True, "result": {"message_id": 1}},
-            {"ok": True, "result": [_callback_update("edit", cid)]},
-            {"ok": True, "result": {}},
-            {"ok": True, "result": {"message_id": 2}},
-        ])
+        http = _make_http_client(
+            [
+                {"ok": True, "result": {"message_id": 1}},
+                {"ok": True, "result": [_callback_update("edit", cid)]},
+                {"ok": True, "result": {}},
+                {"ok": True, "result": {"message_id": 2}},
+            ]
+        )
         hitl = TelegramHITL(token="123:REAL", chat_id="-100123", http_client=http)
         result = hitl.send_hitl_request(req)
 
@@ -229,14 +239,16 @@ class TestPollApproved:
         # Use a near-future expiry so the poll exits quickly
         req = _make_req(correlation_id=cid, expires_in_seconds=1)
 
-        http = _make_http_client([
-            {"ok": True, "result": {"message_id": 1}},
-            # Callback for a different correlation_id — must be ignored
-            {"ok": True, "result": [_callback_update("approve", other_cid)]},
-            # Second poll; empty result → loop exits when expires_at passes
-            {"ok": True, "result": []},
-            {"ok": True, "result": {"message_id": 2}},  # expiry message
-        ])
+        http = _make_http_client(
+            [
+                {"ok": True, "result": {"message_id": 1}},
+                # Callback for a different correlation_id — must be ignored
+                {"ok": True, "result": [_callback_update("approve", other_cid)]},
+                # Second poll; empty result → loop exits when expires_at passes
+                {"ok": True, "result": []},
+                {"ok": True, "result": {"message_id": 2}},  # expiry message
+            ]
+        )
         hitl = TelegramHITL(token="123:REAL", chat_id="-100123", http_client=http)
 
         with patch("firm.adapters.telegram.time.sleep"):
@@ -256,11 +268,13 @@ class TestTimeout:
         cid = str(uuid.uuid4())
         req = _make_req(correlation_id=cid, expires_in_seconds=1)
 
-        http = _make_http_client([
-            {"ok": True, "result": {"message_id": 1}},
-            {"ok": True, "result": []},              # empty updates → expiry loop
-            {"ok": True, "result": {"message_id": 2}},  # expiry notice
-        ])
+        http = _make_http_client(
+            [
+                {"ok": True, "result": {"message_id": 1}},
+                {"ok": True, "result": []},  # empty updates → expiry loop
+                {"ok": True, "result": {"message_id": 2}},  # expiry notice
+            ]
+        )
         hitl = TelegramHITL(token="123:REAL", chat_id="-100123", http_client=http)
 
         with patch("firm.adapters.telegram.time.sleep"):

@@ -589,12 +589,8 @@ def test_register_pending_run_idempotent(migrated_engine: Engine) -> None:
     repo = LedgerRepository(migrated_engine)
     thread_id = f"thread-{uuid.uuid4().hex}"
 
-    repo.register_pending_run(
-        thread_id=thread_id, correlation_id=str(uuid.uuid4()), symbol="AAPL"
-    )
-    repo.register_pending_run(
-        thread_id=thread_id, correlation_id=str(uuid.uuid4()), symbol="AAPL"
-    )
+    repo.register_pending_run(thread_id=thread_id, correlation_id=str(uuid.uuid4()), symbol="AAPL")
+    repo.register_pending_run(thread_id=thread_id, correlation_id=str(uuid.uuid4()), symbol="AAPL")
 
     runs = repo.list_pending_runs()
     matching = [t for t, _, _ in runs if t == thread_id]
@@ -606,9 +602,7 @@ def test_delete_pending_run_removes_row(migrated_engine: Engine) -> None:
     repo = LedgerRepository(migrated_engine)
     thread_id = f"thread-{uuid.uuid4().hex}"
 
-    repo.register_pending_run(
-        thread_id=thread_id, correlation_id=str(uuid.uuid4()), symbol="MSFT"
-    )
+    repo.register_pending_run(thread_id=thread_id, correlation_id=str(uuid.uuid4()), symbol="MSFT")
     repo.delete_pending_run(thread_id)
 
     runs = repo.list_pending_runs()
