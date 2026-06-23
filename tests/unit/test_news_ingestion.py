@@ -239,7 +239,7 @@ class TestNewsIngestionAgent:
         mock_ticker.news = [_nested_item(pub_date=_OLD)]  # 48h ago, outside 24h window
         mock_yf.Ticker.return_value = mock_ticker
 
-        agent, store = self._make_agent()
+        agent, _store = self._make_agent()
         result = agent.run(self._make_input(lookback_hours=24))
 
         assert isinstance(result, NewsIngested)
@@ -268,7 +268,7 @@ class TestNewsIngestionAgent:
         mock_ticker.news = []
         mock_yf.Ticker.return_value = mock_ticker
 
-        agent, store = self._make_agent()
+        agent, _store = self._make_agent()
         result = agent.run(self._make_input())
 
         assert isinstance(result, NewsIngested)
@@ -284,7 +284,7 @@ class TestNewsIngestionAgent:
         mock_ticker.news = [_nested_item()]
         mock_yf.Ticker.return_value = mock_ticker
 
-        agent, store = self._make_agent()
+        agent, _store = self._make_agent()
         result = agent.run(self._make_input(symbols=["NVDA", "AMD"]))
 
         assert isinstance(result, NewsIngested)
