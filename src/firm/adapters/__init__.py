@@ -9,6 +9,7 @@ from firm.adapters.fakes import (
 )
 from firm.adapters.llm_anthropic import MODEL_MAP, AnthropicLLM
 from firm.adapters.llm_cassette import CassetteLLM, CassetteNotFound
+from firm.adapters.llm_offline import GracefulLLM, build_offline_llm
 from firm.adapters.market_data_frozen import FrozenMarketData
 from firm.adapters.report import ExcelReportSink, FileReportSink, SlackReportSink
 
@@ -24,6 +25,8 @@ __all__ = [
     "FakeReportSink",
     "FileReportSink",
     "FrozenMarketData",
+    "GracefulLLM",
     "PgvectorEvidenceStore",
     "SlackReportSink",
+    "build_offline_llm",
 ]

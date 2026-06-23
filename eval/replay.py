@@ -40,8 +40,8 @@ import yaml
 from langgraph.checkpoint.memory import MemorySaver
 from pydantic import BaseModel
 
-from firm.adapters.fakes import FakeEvidenceStore, FakeLLM, FakeReportSink
-from firm.adapters.llm_cassette import CassetteNotFound, CassetteLLM
+from firm.adapters.fakes import FakeEvidenceStore, FakeReportSink
+from firm.adapters.llm_offline import build_offline_llm
 from firm.adapters.market_data_frozen import FrozenMarketData
 from firm.agents.execution import ExecutionFailure, Fill
 from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
@@ -52,7 +52,7 @@ from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.orchestration.graph import build_graph
 from firm.orchestration.nodes import NodePorts
 from firm.ports.llm import LLM
-from firm.ports.types import LLMError, LLMMessage, LLMResponse, NewsDoc, ToolDef, ToolExecutors
+from firm.ports.types import NewsDoc
 
 # ---------------------------------------------------------------------------
 # Configuration and result schemas
@@ -114,69 +114,6 @@ class EvalResult(BaseModel):
     final_nav: float
 
     model_config = {"frozen": True}
-
-
-# ---------------------------------------------------------------------------
-# Graceful LLM wrapper — converts CassetteNotFound to LLMError
-# ---------------------------------------------------------------------------
-
-
-class _GracefulLLM(LLM):
-    """Wraps a ``CassetteLLM`` and catches ``CassetteNotFound`` on miss.
-
-    When the cassette has no entry for a request (common in replay mode when
-    the 11-node graph makes calls the 5-node cassette never recorded), the
-    miss is silently converted to ``LLMError`` so the receiving agent returns
-    its Failure variant instead of crashing the eval runner.
-    """
-
-    def __init__(self, inner: LLM) -> None:
-        self._inner = inner
-
-    def complete(
-        self,
-        messages: list[LLMMessage],
-        *,
-        model: str,
-        max_tokens: int,
-    ) -> LLMResponse | LLMError:
-        try:
-            return self._inner.complete(messages, model=model, max_tokens=max_tokens)
-        except CassetteNotFound as exc:
-            return LLMError(message=f"cassette miss: {exc.key[:16]}", retryable=False)
-
-    def complete_with_tools(
-        self,
-        messages: list[LLMMessage],
-        tools: list[ToolDef],
-        executors: ToolExecutors,
-        *,
-        model: str,
-        max_tokens: int,
-        max_rounds: int = 5,
-    ) -> LLMResponse | LLMError:
-        try:
-            return self._inner.complete_with_tools(
-                messages,
-                tools,
-                executors,
-                model=model,
-                max_tokens=max_tokens,
-                max_rounds=max_rounds,
-            )
-        except CassetteNotFound as exc:
-            return LLMError(message=f"cassette miss: {exc.key[:16]}", retryable=False)
-
-    def count_tokens(
-        self,
-        messages: list[LLMMessage],
-        *,
-        model: str,
-    ) -> int:
-        try:
-            return self._inner.count_tokens(messages, model=model)
-        except CassetteNotFound:
-            return sum(len(m.content) for m in messages) // 4
 
 
 # ---------------------------------------------------------------------------
@@ -700,34 +637,13 @@ def run_eval(config: EvalConfig) -> EvalResult:
 
 
 def _build_llm(cassette_path: Path) -> LLM:
-    """Return an LLM for the eval run.
+    """Return the appropriate offline LLM for the eval harness.
 
-    Priority:
-    1. CassetteLLM (replay) wrapped in _GracefulLLM — if cassette exists.
-       Cassette misses degrade to LLMError so agents return Failure variants.
-    2. CassetteLLM (record) via AnthropicLLM — if ANTHROPIC_API_KEY is set.
-    3. FakeLLM — offline CI fallback (returns "[]" for all calls).
+    Delegates to ``build_offline_llm`` — see that function for selection rules.
+    A bare ``ANTHROPIC_API_KEY`` does NOT trigger live calls; only
+    ``CASSETTE_MODE=record`` does (explicit opt-in).
     """
-    import os
-
-    if cassette_path.exists() and cassette_path.stat().st_size > 0:
-        return _GracefulLLM(CassetteLLM(cassette_path=cassette_path, mode="replay"))
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if api_key:
-        from firm.adapters.llm_anthropic import AnthropicLLM
-
-        cassette_path.parent.mkdir(parents=True, exist_ok=True)
-        inner = AnthropicLLM(api_key=api_key)
-        return CassetteLLM(cassette_path=cassette_path, mode="record", inner=inner)
-
-    canned = LLMResponse(
-        content="[]",
-        input_tokens=10,
-        output_tokens=2,
-        model="claude-haiku-4-5",
-    )
-    return FakeLLM(responses=[canned] * 500)
+    return build_offline_llm(cassette_path)
 
 
 def _try_load_risk_policy(project_root: Path) -> RiskPolicyConfig:

@@ -25,9 +25,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from firm.ports.llm import LLM
+
 if TYPE_CHECKING:
-    from firm.adapters.fakes import FakeLLM
-    from firm.adapters.llm_cassette import CassetteLLM
     from firm.config.settings import RiskPolicyConfig, Settings
 
 # ---------------------------------------------------------------------------
@@ -404,32 +404,16 @@ def _load_corpus_docs(corpus_path: Path) -> list[Any]:
     return _parse_news_docs(corpus_path)
 
 
-def _build_demo_llm(cassette_path: Path) -> CassetteLLM | FakeLLM:
-    """Return CassetteLLM in record mode when an API key is set, else FakeLLM.
+def _build_demo_llm(cassette_path: Path) -> LLM:
+    """Return the appropriate offline LLM for the demo command.
 
-    - CASSETTE_MODE=replay: force replay (fails on miss; useful for CI with a full cassette)
-    - CASSETTE_MODE=record (or ANTHROPIC_API_KEY set): record live calls into the cassette
-    - default (no API key, no CASSETTE_MODE): FakeLLM so demo runs offline without errors
+    Delegates to ``build_offline_llm`` — see that function for selection rules.
+    A bare ``ANTHROPIC_API_KEY`` does NOT trigger live calls; only
+    ``CASSETTE_MODE=record`` does (explicit opt-in).
     """
-    from firm.adapters.fakes import FakeLLM
-    from firm.adapters.llm_cassette import CassetteLLM
-    from firm.ports.types import LLMResponse
+    from firm.adapters.llm_offline import build_offline_llm
 
-    explicit_mode = os.environ.get("CASSETTE_MODE", "")
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-
-    if explicit_mode == "replay" and cassette_path.exists() and cassette_path.stat().st_size > 0:
-        return CassetteLLM(cassette_path=cassette_path, mode="replay")
-
-    if api_key or explicit_mode == "record":
-        from firm.adapters.llm_anthropic import AnthropicLLM
-
-        cassette_path.parent.mkdir(parents=True, exist_ok=True)
-        inner = AnthropicLLM(api_key=api_key)
-        return CassetteLLM(cassette_path=cassette_path, mode="record", inner=inner)
-
-    canned = LLMResponse(content="[]", input_tokens=10, output_tokens=2, model="claude-haiku-4-5")
-    return FakeLLM(responses=[canned] * 500)
+    return build_offline_llm(cassette_path)
 
 
 def _safe_load_risk_policy(root: Path) -> RiskPolicyConfig:
