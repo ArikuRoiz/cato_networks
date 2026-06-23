@@ -95,8 +95,13 @@ class AnthropicLLM(LLM):
     the result union rather than catching exceptions.
     """
 
-    def __init__(self, api_key: str) -> None:
-        self._client: anthropic.Anthropic = anthropic.Anthropic(api_key=api_key)
+    def __init__(self, api_key: str, *, max_retries: int = 8) -> None:
+        # The SDK retries 429/5xx with exponential backoff up to ``max_retries``.
+        # The default of 2 is too low for burst workloads (e.g. recording an eval
+        # cassette fires hundreds of calls and hits rate limits); 8 absorbs them.
+        self._client: anthropic.Anthropic = anthropic.Anthropic(
+            api_key=api_key, max_retries=max_retries
+        )
 
     def complete(
         self,
