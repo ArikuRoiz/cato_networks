@@ -953,6 +953,22 @@ def _query_audit_log(trade_id: str, database_url: str) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# web command (browser dashboard)
+# ---------------------------------------------------------------------------
+
+
+def _cmd_web(args: argparse.Namespace) -> None:
+    """Start the FastAPI dashboard server via uvicorn."""
+    from firm.web.server import run_server
+
+    run_server(
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
@@ -969,6 +985,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_dev_subcommand(sub)
     _add_run_subcommand(sub)
     _add_trace_subcommand(sub)
+    _add_web_subcommand(sub)
     return parser
 
 
@@ -1047,6 +1064,36 @@ def _add_trace_subcommand(sub: Any) -> None:
     )
 
 
+def _add_web_subcommand(sub: Any) -> None:
+    """Register the 'web' subcommand (browser dashboard)."""
+    web_p = sub.add_parser(
+        "web",
+        help=(
+            "Start the FastAPI dashboard on http://localhost:8000. "
+            "Requires DATABASE_URL; ANTHROPIC_API_KEY enables HITL endpoints."
+        ),
+    )
+    web_p.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        metavar="PORT",
+        help="TCP port to listen on (default: 8000).",
+    )
+    web_p.add_argument(
+        "--host",
+        default="0.0.0.0",
+        metavar="HOST",
+        help="Host to bind (default: 0.0.0.0).",
+    )
+    web_p.add_argument(
+        "--reload",
+        action="store_true",
+        default=False,
+        help="Enable uvicorn hot-reload (dev mode).",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -1067,6 +1114,7 @@ def main() -> None:
         "dev": _cmd_dev,
         "run": _cmd_run,
         "trace": _cmd_trace,
+        "web": _cmd_web,
     }
     dispatch[args.command](args)
     from firm.observability import flush_telemetry

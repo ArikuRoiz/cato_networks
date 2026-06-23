@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Investment Firm — Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2d3147;
+      --accent: #4f8ef7;
+      --green: #2ecc71;
+      --red: #e74c3c;
+      --yellow: #f39c12;
+      --text: #e0e3f0;
+      --muted: #8892b0;
+      --font: 'Segoe UI', system-ui, sans-serif;
+      --mono: 'Cascadia Code', 'Fira Code', monospace;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header h1 { font-size: 18px; font-weight: 600; letter-spacing: .3px; }
+    header .badge {
+      font-size: 11px;
+      background: var(--accent);
+      color: #fff;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 600;
+    }
+
+    main { padding: 24px; display: flex; flex-direction: column; gap: 24px; }
+
+    /* ---- Cards ---- */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .card h2 {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+
+    /* ---- Portfolio summary ---- */
+    .portfolio-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .stat { display: flex; flex-direction: column; gap: 4px; }
+    .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    .stat .value { font-size: 22px; font-weight: 700; font-family: var(--mono); }
+    .stat .value.pos { color: var(--green); }
+    .stat .value.neg { color: var(--red); }
+
+    /* ---- Tables ---- */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase;
+         letter-spacing: .5px; color: var(--muted); padding: 0 8px 10px; border-bottom: 1px solid var(--border); }
+    td { padding: 8px; border-bottom: 1px solid #1e2133; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    tr.clickable { cursor: pointer; }
+    tr.clickable:hover td { background: #1f2234; }
+
+    /* ---- Badges ---- */
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .pill-filled    { background: #1a3a2a; color: var(--green); }
+    .pill-hold      { background: #2a2a1a; color: var(--yellow); }
+    .pill-rejected  { background: #3a1a1a; color: var(--red); }
+    .pill-error     { background: #3a1a2a; color: #e05080; }
+    .pill-pending   { background: #1a2a3a; color: var(--accent); }
+    .pill-buy       { background: #1a2a1a; color: var(--green); }
+    .pill-sell      { background: #3a1a1a; color: var(--red); }
+
+    /* ---- Approval panel ---- */
+    .approval-item {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .approval-item h3 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+    .approval-meta { color: var(--muted); font-size: 12px; margin-bottom: 12px; font-family: var(--mono); }
+    .approval-actions { display: flex; gap: 8px; align-items: center; }
+    .btn {
+      padding: 6px 16px;
+      border: none;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-approve { background: var(--green); color: #fff; }
+    .btn-approve:hover { background: #27ae60; }
+    .btn-reject  { background: var(--red);   color: #fff; }
+    .btn-reject:hover  { background: #c0392b; }
+    .btn-disabled { opacity: .5; pointer-events: none; }
+
+    .qty-input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: var(--mono);
+      width: 100px;
+      font-size: 13px;
+    }
+
+    /* ---- Run form ---- */
+    .run-form { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+    .run-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+    .run-form input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: 5px;
+      font-size: 13px;
+      width: 220px;
+    }
+    .run-form input:focus { outline: 1px solid var(--accent); }
+    .btn-run { background: var(--accent); color: #fff; padding: 8px 20px; margin-top: 16px; }
+    .btn-run:hover { background: #3a7de8; }
+
+    /* ---- Trace drawer ---- */
+    #trace-drawer {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+    }
+    #trace-drawer h2 { font-size: 13px; font-weight: 600; text-transform: uppercase;
+                        letter-spacing: .6px; color: var(--muted); margin-bottom: 16px; }
+    .trace-entry { display: flex; gap: 12px; margin-bottom: 10px; font-size: 12px; }
+    .trace-actor { color: var(--accent); font-family: var(--mono); min-width: 140px; }
+    .trace-action { color: var(--text); font-family: var(--mono); flex: 1; }
+    .trace-ts { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+    pre.trace-payload {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      padding: 8px; font-size: 11px; font-family: var(--mono);
+      overflow-x: auto; margin-top: 4px; color: var(--muted);
+    }
+
+    /* ---- Status bar ---- */
+    #status-bar {
+      font-size: 12px; color: var(--muted); text-align: right;
+      padding: 4px 24px 12px;
+    }
+    #status-bar.error { color: var(--red); }
+
+    /* ---- Empty state ---- */
+    .empty { text-align: center; color: var(--muted); padding: 24px; font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>AI Investment Firm</h1>
+  <span class="badge">LIVE</span>
+</header>
+
+<main>
+
+  <!-- Portfolio summary -->
+  <div class="card" id="portfolio-card">
+    <h2>Portfolio</h2>
+    <div class="portfolio-grid">
+      <div class="stat"><span class="label">NAV</span><span class="value" id="nav">—</span></div>
+      <div class="stat"><span class="label">Cash</span><span class="value" id="cash">—</span></div>
+      <div class="stat"><span class="label">P&L</span><span class="value" id="pnl">—</span></div>
+    </div>
+    <table id="holdings-table">
+      <thead><tr><th>Symbol</th><th>Quantity</th><th>Avg Cost</th></tr></thead>
+      <tbody><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- Pending approvals -->
+  <div class="card" id="approvals-card">
+    <h2>Pending Approvals</h2>
+    <div id="approvals-list"><div class="empty">Checking…</div></div>
+  </div>
+
+  <!-- Run trigger -->
+  <div class="card">
+    <h2>Run Decision Cycles</h2>
+    <div class="run-form">
+      <label>
+        Tickers (comma-separated)
+        <input type="text" id="run-tickers" placeholder="AAPL,MSFT,NVDA" value="AAPL,MSFT,NVDA">
+      </label>
+      <label>
+        Lookback days
+        <input type="number" id="run-lookback" value="7" min="1" max="90" style="width:100px">
+      </label>
+      <button class="btn btn-run" onclick="triggerRun()">Run</button>
+    </div>
+    <div id="run-status" style="margin-top:10px;font-size:12px;color:var(--muted)"></div>
+  </div>
+
+  <!-- Recent trades -->
+  <div class="card">
+    <h2>Recent Trades</h2>
+    <table id="trades-table">
+      <thead>
+        <tr>
+          <th>Symbol</th><th>Side</th><th>Qty</th><th>Fill Price</th><th>Status</th><th>Filled At</th>
+        </tr>
+      </thead>
+      <tbody><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- Decision cycles -->
+  <div class="card">
+    <h2>Decision Cycles</h2>
+    <table id="cycles-table">
+      <thead>
+        <tr>
+          <th>Correlation ID</th><th>Type</th><th>Outcome</th><th>Started</th><th>Judge</th>
+        </tr>
+      </thead>
+      <tbody><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- Trace drawer (shown on cycle click) -->
+  <div id="trace-drawer">
+    <h2>Cycle Trace — <span id="trace-cid"></span></h2>
+    <button class="btn" onclick="closeTrace()" style="margin-bottom:12px;background:var(--border);color:var(--text)">Close</button>
+    <div id="trace-entries"></div>
+  </div>
+
+</main>
+<div id="status-bar">—</div>
+
+<script>
+/* -------------------------------------------------------------------------
+   Helpers
+   ------------------------------------------------------------------------- */
+
+function fmt(n, decimals = 2) {
+  const v = parseFloat(n);
+  if (isNaN(v)) return n || '—';
+  return '$' + v.toLocaleString('en-US', {minimumFractionDigits: decimals, maximumFractionDigits: decimals});
+}
+
+function fmtQty(n) {
+  const v = parseFloat(n);
+  if (isNaN(v)) return n || '—';
+  return v.toLocaleString('en-US', {minimumFractionDigits: 4, maximumFractionDigits: 4});
+}
+
+function pill(outcome) {
+  if (!outcome) return '<span class="pill pill-hold">unknown</span>';
+  const cls = {
+    filled: 'pill-filled',
+    hold: 'pill-hold',
+    rejected: 'pill-rejected',
+    rejected_timeout: 'pill-rejected',
+    rejected_market_closed: 'pill-rejected',
+    error: 'pill-error',
+    pending: 'pill-pending',
+  }[outcome] || 'pill-hold';
+  return `<span class="pill ${cls}">${outcome}</span>`;
+}
+
+function sidePill(side) {
+  const cls = side === 'buy' ? 'pill-buy' : 'pill-sell';
+  return `<span class="pill ${cls}">${side}</span>`;
+}
+
+function setStatus(msg, isErr = false) {
+  const el = document.getElementById('status-bar');
+  el.textContent = `Last update: ${new Date().toLocaleTimeString()} — ${msg}`;
+  el.className = isErr ? 'error' : '';
+}
+
+async function api(path) {
+  const resp = await fetch(path);
+  if (!resp.ok) throw new Error(`${path} → ${resp.status}`);
+  return resp.json();
+}
+
+/* -------------------------------------------------------------------------
+   Portfolio
+   ------------------------------------------------------------------------- */
+
+async function loadPortfolio() {
+  try {
+    const d = await api('/api/portfolio');
+    document.getElementById('nav').textContent = fmt(d.nav);
+    document.getElementById('cash').textContent = fmt(d.cash);
+    const pnlEl = document.getElementById('pnl');
+    const pnlVal = parseFloat(d.pnl);
+    pnlEl.textContent = fmt(d.pnl);
+    pnlEl.className = 'value ' + (pnlVal >= 0 ? 'pos' : 'neg');
+
+    const tbody = document.querySelector('#holdings-table tbody');
+    if (!d.holdings || d.holdings.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" class="empty">No open positions</td></tr>';
+      return;
+    }
+    tbody.innerHTML = d.holdings.map(h =>
+      `<tr><td>${h.symbol}</td><td>${fmtQty(h.quantity)}</td><td>${fmt(h.avg_cost, 4)}</td></tr>`
+    ).join('');
+  } catch (e) {
+    setStatus('Portfolio error: ' + e.message, true);
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Trades
+   ------------------------------------------------------------------------- */
+
+async function loadTrades() {
+  try {
+    const trades = await api('/api/trades');
+    const tbody = document.querySelector('#trades-table tbody');
+    if (!trades.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No trades yet</td></tr>';
+      return;
+    }
+    tbody.innerHTML = trades.map(t => `
+      <tr>
+        <td>${t.symbol}</td>
+        <td>${sidePill(t.side)}</td>
+        <td>${fmtQty(t.qty)}</td>
+        <td>${t.fill_price ? fmt(t.fill_price, 4) : '—'}</td>
+        <td>${pill(t.status.toLowerCase())}</td>
+        <td style="font-size:11px;color:var(--muted)">${t.filled_at ? t.filled_at.slice(0,19).replace('T',' ') : '—'}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    setStatus('Trades error: ' + e.message, true);
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Cycles
+   ------------------------------------------------------------------------- */
+
+async function loadCycles() {
+  try {
+    const cycles = await api('/api/cycles');
+    const tbody = document.querySelector('#cycles-table tbody');
+    if (!cycles.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No cycles yet</td></tr>';
+      return;
+    }
+    tbody.innerHTML = cycles.map(c => {
+      const cid = c.correlation_id || c.id;
+      const shortCid = cid ? cid.slice(0,8) + '…' : '—';
+      return `
+        <tr class="clickable" onclick="loadTrace('${cid || ''}', '${shortCid}')">
+          <td style="font-family:var(--mono);font-size:11px">${shortCid}</td>
+          <td>${c.trigger_type || '—'}</td>
+          <td>${pill(c.outcome)}</td>
+          <td style="font-size:11px;color:var(--muted)">${c.started_at ? c.started_at.slice(0,19).replace('T',' ') : '—'}</td>
+          <td>${c.judge_score != null ? c.judge_score + '/5' : '—'}</td>
+        </tr>
+      `;
+    }).join('');
+  } catch (e) {
+    setStatus('Cycles error: ' + e.message, true);
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Trace drawer
+   ------------------------------------------------------------------------- */
+
+async function loadTrace(correlationId, label) {
+  if (!correlationId) return;
+  document.getElementById('trace-cid').textContent = correlationId;
+  document.getElementById('trace-drawer').style.display = 'block';
+  document.getElementById('trace-entries').innerHTML = '<div class="empty">Loading…</div>';
+  document.getElementById('trace-drawer').scrollIntoView({behavior: 'smooth'});
+
+  try {
+    const entries = await api(`/api/cycles/${correlationId}/trace`);
+    const el = document.getElementById('trace-entries');
+    if (!entries.length) {
+      el.innerHTML = '<div class="empty">No audit entries found for this cycle.</div>';
+      return;
+    }
+    el.innerHTML = entries.map(e => `
+      <div class="trace-entry">
+        <span class="trace-actor">${e.actor}</span>
+        <div>
+          <span class="trace-action">${e.action}</span>
+          <span class="trace-ts"> — ${e.ts ? e.ts.slice(0,19).replace('T',' ') : ''}</span>
+          <pre class="trace-payload">${JSON.stringify(e.payload, null, 2)}</pre>
+        </div>
+      </div>
+    `).join('');
+  } catch (err) {
+    document.getElementById('trace-entries').innerHTML =
+      `<div class="empty">Error: ${err.message}</div>`;
+  }
+}
+
+function closeTrace() {
+  document.getElementById('trace-drawer').style.display = 'none';
+}
+
+/* -------------------------------------------------------------------------
+   Approvals
+   ------------------------------------------------------------------------- */
+
+async function loadApprovals() {
+  try {
+    const pending = await api('/api/approvals/pending');
+    const el = document.getElementById('approvals-list');
+    if (!pending.length) {
+      el.innerHTML = '<div class="empty">No pending approvals</div>';
+      return;
+    }
+    el.innerHTML = pending.map(p => `
+      <div class="approval-item" id="approval-${p.thread_id}">
+        <h3>${p.symbol}</h3>
+        <div class="approval-meta">
+          Thread: ${p.thread_id.slice(0,8)}… &nbsp;|&nbsp;
+          Notional: ${p.notional !== 'unknown' ? fmt(p.notional) : p.notional} &nbsp;|&nbsp;
+          Cycle: ${p.correlation_id ? p.correlation_id.slice(0,8) + '…' : '—'}
+        </div>
+        <div class="approval-actions">
+          <input class="qty-input" id="qty-${p.thread_id}" type="number" step="any" placeholder="Edit qty (opt)">
+          <button class="btn btn-approve" onclick="submitApproval('${p.thread_id}', 'approve')">Approve</button>
+          <button class="btn btn-reject"  onclick="submitApproval('${p.thread_id}', 'reject')">Reject</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    setStatus('Approvals error: ' + e.message, true);
+  }
+}
+
+async function submitApproval(threadId, decision) {
+  const qtyInput = document.getElementById('qty-' + threadId);
+  const editedQty = qtyInput && qtyInput.value ? parseFloat(qtyInput.value) : null;
+
+  const body = {decision};
+  if (editedQty != null && !isNaN(editedQty)) body.edited_qty = editedQty;
+
+  const item = document.getElementById('approval-' + threadId);
+  if (item) {
+    item.querySelectorAll('.btn').forEach(b => b.classList.add('btn-disabled'));
+    item.querySelector('h3').textContent += ' — processing…';
+  }
+
+  try {
+    const resp = await fetch(`/api/approvals/${threadId}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const result = await resp.json();
+    if (item) {
+      item.innerHTML = `
+        <h3>Done — ${result.outcome || 'complete'}</h3>
+        <div class="approval-meta">HITL status: ${result.hitl_status} | Thread: ${threadId.slice(0,8)}…</div>
+      `;
+    }
+    setStatus(`Approval submitted: ${decision} → ${result.outcome}`);
+    setTimeout(loadApprovals, 3000);
+    setTimeout(loadPortfolio, 3000);
+    setTimeout(loadTrades, 3000);
+  } catch (e) {
+    setStatus('Approval error: ' + e.message, true);
+    if (item) item.querySelectorAll('.btn').forEach(b => b.classList.remove('btn-disabled'));
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Run trigger
+   ------------------------------------------------------------------------- */
+
+async function triggerRun() {
+  const tickers = document.getElementById('run-tickers').value.trim();
+  const lookback = parseInt(document.getElementById('run-lookback').value, 10);
+  const statusEl = document.getElementById('run-status');
+
+  if (!tickers) { statusEl.textContent = 'Enter at least one ticker.'; return; }
+  const tickerList = tickers.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+
+  statusEl.textContent = 'Starting run…';
+  try {
+    const resp = await fetch('/api/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tickers: tickerList, lookback_days: lookback}),
+    });
+    const result = await resp.json();
+    if (!resp.ok) { statusEl.textContent = 'Error: ' + (result.detail || resp.status); return; }
+    statusEl.textContent = `Started ${result.thread_ids.length} cycle(s). Thread IDs: ${result.thread_ids.map(t => t.slice(0,8)).join(', ')}…`;
+    setStatus('Run started — polling for results…');
+    setTimeout(refreshAll, 10000);
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Polling
+   ------------------------------------------------------------------------- */
+
+async function refreshAll() {
+  await Promise.allSettled([
+    loadPortfolio(),
+    loadTrades(),
+    loadCycles(),
+    loadApprovals(),
+  ]);
+  setStatus('OK');
+}
+
+// Initial load
+refreshAll();
+
+// Auto-refresh every 15 s (approvals every 8 s for responsiveness)
+setInterval(loadApprovals, 8000);
+setInterval(refreshAll, 15000);
+</script>
+</body>
+</html>

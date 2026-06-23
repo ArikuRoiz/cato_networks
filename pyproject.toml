@@ -25,6 +25,9 @@ dependencies = [
   "pyyaml>=6.0",
   "yfinance>=0.2",
   "sentence-transformers>=5.6.0",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "jinja2>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -87,6 +90,12 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["sentence_transformers", "sentence_transformers.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Web sub-package: FastAPI routes use complex callable patterns that mypy
+# cannot fully type-check without significant annotation overhead.
+module = ["firm.web.app", "firm.web.server", "firm.web.runtime"]
+ignore_errors = true
 
 [[tool.mypy.overrides]]
 # LangGraph's StateGraph.add_node typing is incompatible with TypedDict-based

@@ -27,6 +27,9 @@ dev:
 trace:
 	uv run python -m firm.cli trace --trade-id $(TRADE)
 
+web:
+	uv run python -m firm.cli web
+
 # ---------------------------------------------------------------------------
 # Docker infra only (Postgres + Langfuse, no app container)
 # ---------------------------------------------------------------------------
