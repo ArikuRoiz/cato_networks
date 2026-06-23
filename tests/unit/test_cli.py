@@ -18,7 +18,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from firm.cli import _build_parser, _parse_tickers, _safe_load_risk_policy
+from firm.cli.commands.demo import _safe_load_risk_policy
+from firm.cli.commands.run import _parse_tickers
+from firm.cli.main import _build_parser
 from firm.config.settings import RiskPolicyConfig
 
 
@@ -313,7 +315,7 @@ class TestEmbedCorpus:
                 return_value="postgresql://...",
             ),
         ):
-            from firm.cli import _embed_corpus
+            from firm.cli.commands.seed import _embed_corpus
 
             count = _embed_corpus(corpus_path, "postgresql://firm:firm@localhost:5432/firm")
 
@@ -341,7 +343,7 @@ class TestEmbedCorpus:
                 side_effect=lambda url: url,
             ),
         ):
-            from firm.cli import _embed_corpus
+            from firm.cli.commands.seed import _embed_corpus
 
             _embed_corpus(corpus_path, expected_url)
 
@@ -368,7 +370,7 @@ class TestEmbedCorpus:
                 return_value="postgresql://...",
             ),
         ):
-            from firm.cli import _embed_corpus
+            from firm.cli.commands.seed import _embed_corpus
 
             _embed_corpus(corpus_path, "postgresql://firm:firm@localhost:5432/firm")
 

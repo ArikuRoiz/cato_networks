@@ -381,49 +381,49 @@ class TestMapCallbackToResult:
 
 class TestCliHitlArgs:
     def test_run_hitl_default_is_auto(self) -> None:
-        from firm.cli import _build_parser
+        from firm.cli.main import _build_parser
 
         parser = _build_parser()
         args = parser.parse_args(["run"])
         assert args.hitl == "auto"
 
     def test_run_hitl_console(self) -> None:
-        from firm.cli import _build_parser
+        from firm.cli.main import _build_parser
 
         parser = _build_parser()
         args = parser.parse_args(["run", "--hitl", "console"])
         assert args.hitl == "console"
 
     def test_run_hitl_telegram(self) -> None:
-        from firm.cli import _build_parser
+        from firm.cli.main import _build_parser
 
         parser = _build_parser()
         args = parser.parse_args(["run", "--hitl", "telegram"])
         assert args.hitl == "telegram"
 
     def test_run_hitl_rejects_invalid_choice(self) -> None:
-        from firm.cli import _build_parser
+        from firm.cli.main import _build_parser
 
         parser = _build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["run", "--hitl", "fax"])
 
     def test_run_force_buy_default_false(self) -> None:
-        from firm.cli import _build_parser
+        from firm.cli.main import _build_parser
 
         parser = _build_parser()
         args = parser.parse_args(["run"])
         assert args.force_buy is False
 
     def test_run_force_buy_flag_sets_true(self) -> None:
-        from firm.cli import _build_parser
+        from firm.cli.main import _build_parser
 
         parser = _build_parser()
         args = parser.parse_args(["run", "--force-buy"])
         assert args.force_buy is True
 
     def test_run_force_buy_combined_with_tickers(self) -> None:
-        from firm.cli import _build_parser
+        from firm.cli.main import _build_parser
 
         parser = _build_parser()
         args = parser.parse_args(["run", "--force-buy", "--tickers", "NVDA", "--hitl", "telegram"])

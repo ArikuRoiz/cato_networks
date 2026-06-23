@@ -807,7 +807,7 @@ class TestAlternativesKeyboard:
 
 class TestCliBotSubcommand:
     def test_bot_subcommand_exists(self) -> None:
-        from firm.cli import _build_parser
+        from firm.cli.main import _build_parser
 
         parser = _build_parser()
         args, _ = parser.parse_known_args(["bot"])
