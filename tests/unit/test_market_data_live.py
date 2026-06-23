@@ -80,9 +80,18 @@ class TestGetBars:
     def test_returns_bars_within_range(self) -> None:
         """get_bars returns only bars in [start, end)."""
         df = _make_fake_df(
-            ("2024-10-21", {"Open": 130.0, "High": 135.0, "Low": 128.0, "Close": 132.0, "Volume": 500_000}),
-            ("2024-10-22", {"Open": 132.0, "High": 138.0, "Low": 131.0, "Close": 136.0, "Volume": 600_000}),
-            ("2024-10-23", {"Open": 136.0, "High": 145.0, "Low": 135.0, "Close": 143.0, "Volume": 900_000}),
+            (
+                "2024-10-21",
+                {"Open": 130.0, "High": 135.0, "Low": 128.0, "Close": 132.0, "Volume": 500_000},
+            ),
+            (
+                "2024-10-22",
+                {"Open": 132.0, "High": 138.0, "Low": 131.0, "Close": 136.0, "Volume": 600_000},
+            ),
+            (
+                "2024-10-23",
+                {"Open": 136.0, "High": 145.0, "Low": 135.0, "Close": 143.0, "Volume": 900_000},
+            ),
         )
         ticker = _make_ticker_mock(df)
         mock_yf = MagicMock()
@@ -116,7 +125,10 @@ class TestGetBars:
 
     def test_bar_fields_mapped_correctly(self) -> None:
         df = _make_fake_df(
-            ("2024-10-21", {"Open": 130.5, "High": 135.25, "Low": 128.75, "Close": 133.0, "Volume": 456_789}),
+            (
+                "2024-10-21",
+                {"Open": 130.5, "High": 135.25, "Low": 128.75, "Close": 133.0, "Volume": 456_789},
+            ),
         )
         ticker = _make_ticker_mock(df)
         mock_yf = MagicMock()
@@ -139,7 +151,10 @@ class TestGetBars:
 
     def test_symbol_uppercased(self) -> None:
         df = _make_fake_df(
-            ("2024-10-21", {"Open": 100.0, "High": 105.0, "Low": 99.0, "Close": 102.0, "Volume": 1000}),
+            (
+                "2024-10-21",
+                {"Open": 100.0, "High": 105.0, "Low": 99.0, "Close": 102.0, "Volume": 1000},
+            ),
         )
         ticker = _make_ticker_mock(df)
         mock_yf = MagicMock()
@@ -157,8 +172,14 @@ class TestGetBars:
         import math
 
         df = _make_fake_df(
-            ("2024-10-21", {"Open": 100.0, "High": 105.0, "Low": 99.0, "Close": math.nan, "Volume": 1000}),
-            ("2024-10-22", {"Open": 101.0, "High": 106.0, "Low": 100.0, "Close": 103.0, "Volume": 2000}),
+            (
+                "2024-10-21",
+                {"Open": 100.0, "High": 105.0, "Low": 99.0, "Close": math.nan, "Volume": 1000},
+            ),
+            (
+                "2024-10-22",
+                {"Open": 101.0, "High": 106.0, "Low": 100.0, "Close": 103.0, "Volume": 2000},
+            ),
         )
         ticker = _make_ticker_mock(df)
         mock_yf = MagicMock()
@@ -193,7 +214,10 @@ class TestGetBars:
 class TestGetBar:
     def test_returns_bar_for_exact_date(self) -> None:
         df = _make_fake_df(
-            ("2024-10-23", {"Open": 136.0, "High": 145.0, "Low": 135.0, "Close": 143.0, "Volume": 900_000}),
+            (
+                "2024-10-23",
+                {"Open": 136.0, "High": 145.0, "Low": 135.0, "Close": 143.0, "Volume": 900_000},
+            ),
         )
         ticker = _make_ticker_mock(df)
         mock_yf = MagicMock()
@@ -226,7 +250,10 @@ class TestGetBar:
     def test_intraday_ts_resolves_to_daily_bar(self) -> None:
         """An intra-day timestamp like 14:30 UTC still maps to the correct daily bar."""
         df = _make_fake_df(
-            ("2024-10-23", {"Open": 136.0, "High": 145.0, "Low": 135.0, "Close": 143.0, "Volume": 900_000}),
+            (
+                "2024-10-23",
+                {"Open": 136.0, "High": 145.0, "Low": 135.0, "Close": 143.0, "Volume": 900_000},
+            ),
         )
         ticker = _make_ticker_mock(df)
         mock_yf = MagicMock()
@@ -249,7 +276,10 @@ class TestGetBar:
         # This simulates a situation where the date requested has no bar but the next
         # day's bar is present.
         df = _make_fake_df(
-            ("2024-10-24", {"Open": 140.0, "High": 145.0, "Low": 139.0, "Close": 143.0, "Volume": 700_000}),
+            (
+                "2024-10-24",
+                {"Open": 140.0, "High": 145.0, "Low": 139.0, "Close": 143.0, "Volume": 700_000},
+            ),
         )
         ticker = _make_ticker_mock(df)
         mock_yf = MagicMock()

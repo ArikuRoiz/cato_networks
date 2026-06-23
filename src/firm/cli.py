@@ -579,8 +579,7 @@ def _validate_live_settings(settings: Settings) -> None:
     """Raise SystemExit with a clear message when required env vars are missing."""
     if not settings.has_anthropic_key:
         raise SystemExit(
-            "ANTHROPIC_API_KEY is not set. "
-            "Add it to .env or export it before running 'firm run'."
+            "ANTHROPIC_API_KEY is not set. Add it to .env or export it before running 'firm run'."
         )
 
 
@@ -1021,8 +1020,7 @@ def _add_run_subcommand(sub: Any) -> None:
         default=None,
         metavar="TICKER,TICKER,...",
         help=(
-            "Comma-separated list of tickers to analyse "
-            f"(default: {','.join(_DEFAULT_WATCHLIST)})."
+            f"Comma-separated list of tickers to analyse (default: {','.join(_DEFAULT_WATCHLIST)})."
         ),
     )
     run_p.add_argument(

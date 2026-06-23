@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from firm.agents.base import BaseAgent
 from firm.agents.news_ingestion.schemas import (
@@ -12,6 +14,53 @@ from firm.agents.news_ingestion.schemas import (
 )
 from firm.ports.evidence import EvidenceStore
 from firm.ports.types import NewsDoc
+
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _RawItem:
+    """Normalised view of one yfinance news item — handles both schema shapes."""
+
+    title: str
+    url: str
+    publisher: str
+    pub_date_raw: str | int | None  # ISO string (new) or epoch int (legacy)
+    summary: str
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.title and self.url and self.pub_date_raw is not None)
+
+    @property
+    def published_at(self) -> datetime | None:
+        if self.pub_date_raw is None:
+            return None
+        if isinstance(self.pub_date_raw, str):
+            try:
+                return datetime.fromisoformat(self.pub_date_raw.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        try:
+            return datetime.fromtimestamp(int(self.pub_date_raw), tz=UTC)
+        except (ValueError, OSError):
+            return None
+
+    @property
+    def body(self) -> str:
+        parts = [self.title]
+        if self.summary:
+            parts.append(self.summary)
+        if self.publisher:
+            parts.append(f"Source: {self.publisher}.")
+        return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 class NewsIngestionAgent(BaseAgent[NewsIngestionInput, NewsIngested | NewsIngestionFailure]):
@@ -41,11 +90,16 @@ class NewsIngestionAgent(BaseAgent[NewsIngestionInput, NewsIngested | NewsIngest
         return NewsIngested(articles_added=added, symbols_updated=updated)
 
 
+# ---------------------------------------------------------------------------
+# Validators / helpers
+# ---------------------------------------------------------------------------
+
+
 def _ingest_symbol(
     evidence: EvidenceStore, symbol: str, cutoff: datetime
 ) -> int | NewsIngestionFailure:
     try:
-        import yfinance as yf  # type: ignore[import-untyped]  # no stubs
+        yf = _import_yfinance()
     except ImportError:
         return NewsIngestionFailure(
             reason="yfinance not installed; run: pip install yfinance", symbol=symbol
@@ -53,13 +107,13 @@ def _ingest_symbol(
 
     try:
         ticker = yf.Ticker(symbol)
-        raw_news = ticker.news or []
+        raw_news: list[Any] = ticker.news or []
     except Exception as exc:
         return NewsIngestionFailure(reason=f"yfinance fetch failed: {exc}", symbol=symbol)
 
     count = 0
-    for item in raw_news:
-        doc = _to_news_doc(symbol, item, cutoff)
+    for raw in raw_news:
+        doc = _to_news_doc(symbol, raw, cutoff)
         if doc is None:
             continue
         try:
@@ -71,25 +125,54 @@ def _ingest_symbol(
     return count
 
 
-def _to_news_doc(symbol: str, item: dict, cutoff: datetime) -> NewsDoc | None:  # type: ignore[type-arg]
-    title: str = item.get("title", "").strip()
-    link: str = item.get("link", "").strip()
-    ts_raw = item.get("providerPublishTime")
+def _parse_raw_item(raw: dict[str, Any]) -> _RawItem:
+    """Wrap one yfinance news dict — handles nested `content` (new) and flat (legacy)."""
+    content: dict[str, Any] = raw.get("content") or {}
+    if content:
+        # New nested schema (yfinance ≥ 0.2.x, circa 2025+)
+        canonical: dict[str, Any] = content.get("canonicalUrl") or {}
+        provider: dict[str, Any] = content.get("provider") or {}
+        return _RawItem(
+            title=content.get("title", "").strip(),
+            url=(canonical.get("url") or "").strip(),
+            publisher=(provider.get("displayName") or "").strip(),
+            pub_date_raw=content.get("pubDate") or content.get("displayTime"),
+            summary=content.get("summary", "").strip(),
+        )
+    # Legacy flat schema
+    return _RawItem(
+        title=raw.get("title", "").strip(),
+        url=raw.get("link", "").strip(),
+        publisher=raw.get("publisher", "").strip(),
+        pub_date_raw=raw.get("providerPublishTime"),
+        summary="",
+    )
 
-    if not title or not link or ts_raw is None:
+
+def _to_news_doc(symbol: str, raw: dict[str, Any], cutoff: datetime) -> NewsDoc | None:
+    item = _parse_raw_item(raw)
+    if not item.is_valid:
         return None
 
-    published_at = datetime.fromtimestamp(int(ts_raw), tz=UTC)
-    if published_at < cutoff:
+    published_at = item.published_at
+    if published_at is None or published_at < cutoff:
         return None
-
-    # Best-effort body: title + publisher for richer chunk text
-    publisher: str = item.get("publisher", "")
-    body = f"{title}. Source: {publisher}." if publisher else title
 
     return NewsDoc(
         symbol=symbol,
-        text=body,
-        source_url=link,
+        text=item.body,
+        source_url=item.url,
         published_at=published_at,
     )
+
+
+def _import_yfinance() -> Any:
+    """Import and return the yfinance module; raise ImportError with hint if absent."""
+    try:
+        import yfinance as yf  # type: ignore[import-untyped]  # no stubs
+
+        return yf
+    except ImportError as exc:
+        raise ImportError(
+            "yfinance is required for news ingestion. Run: pip install yfinance"
+        ) from exc

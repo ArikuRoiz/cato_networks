@@ -32,5 +32,5 @@ def to_sqlalchemy_url(url: str) -> str:
     """
     for prefix in _KNOWN_PREFIXES:
         if url.startswith(prefix):
-            return f"{_PSYCOPG_DIALECT}{url[len(prefix):]}"
+            return f"{_PSYCOPG_DIALECT}{url[len(prefix) :]}"
     return url

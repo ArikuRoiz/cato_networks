@@ -97,8 +97,7 @@ def _import_yfinance() -> Any:
         return yf
     except ImportError as exc:
         raise ImportError(
-            "yfinance is required for live market data. "
-            "Install it with: pip install yfinance"
+            "yfinance is required for live market data. Install it with: pip install yfinance"
         ) from exc
 
 
