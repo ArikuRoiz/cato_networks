@@ -5,7 +5,7 @@ Covers:
 - FakeEvidenceStore no-lookahead filtering
 - FakeLLM sequential response replay and overflow guard
 - FakeMarketData range queries
-- Smoke test: a stub ResearchAgent wired to FakeEvidenceStore + FakeLLM runs without DB
+- FakeReportSink send_daily_report / send_hitl_request / send_alert
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from firm.ports.types import (
     LLMResponse,
     NewsDoc,
 )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -392,73 +393,3 @@ def test_fake_report_sink_send_alert_captures() -> None:
     msg, cid = fake.alerts[0]
     assert msg == "circuit breaker tripped"
     assert cid == "corr-xyz"
-
-
-# ---------------------------------------------------------------------------
-# Smoke test: stub ResearchAgent wired to FakeEvidenceStore + FakeLLM
-# ---------------------------------------------------------------------------
-
-
-class _StubResearchAgent:
-    """Minimal Research-agent stub used only in this smoke test.
-
-    A real ResearchAgent arrives in FIRM-11; this stub validates that the
-    fakes satisfy the port contracts well enough for an agent to consume them
-    without a database.
-    """
-
-    def __init__(self, evidence: EvidenceStore, llm: LLM) -> None:
-        self._evidence = evidence
-        self._llm = llm
-
-    def run(self, symbol: str, decision_ts: datetime) -> str:
-        """Retrieve evidence and get an LLM summary; return the summary text."""
-        chunks = self._evidence.search(symbol, before=decision_ts, k=5)
-        if not chunks:
-            return "insufficient_evidence"
-        context = " ".join(c.text for c in chunks)
-        msgs = [LLMMessage(role="user", content=f"Summarise: {context}")]
-        result = self._llm.complete(msgs, model="claude-haiku-test", max_tokens=256)
-        if isinstance(result, LLMResponse):
-            return result.content
-        return f"error: {result.message}"
-
-
-def test_stub_research_agent_runs_without_db() -> None:
-    """A stub ResearchAgent wired to fakes runs end-to-end without any DB."""
-    evidence = FakeEvidenceStore()
-    evidence.docs.append(_chunk("NVDA", published_at=_ts(-30), text="NVDA earnings beat estimates"))
-    llm = FakeLLM(responses=[_llm_response("Positive sentiment for NVDA.")])
-    agent = _StubResearchAgent(evidence=evidence, llm=llm)
-
-    result = agent.run("NVDA", decision_ts=_ts(0))
-
-    assert result == "Positive sentiment for NVDA."
-
-
-def test_stub_research_agent_returns_insufficient_on_empty_corpus() -> None:
-    """With no evidence, the stub returns the refusal sentinel."""
-    evidence = FakeEvidenceStore()
-    llm = FakeLLM()
-    agent = _StubResearchAgent(evidence=evidence, llm=llm)
-
-    result = agent.run("AAPL", decision_ts=_ts(0))
-
-    assert result == "insufficient_evidence"
-
-
-def test_stub_research_agent_no_lookahead() -> None:
-    """Only evidence published before decision_ts is passed to the LLM."""
-    evidence = FakeEvidenceStore()
-    past_chunk = _chunk("META", published_at=_ts(-10), text="past news")
-    future_chunk = _chunk("META", published_at=_ts(10), text="future news")
-    evidence.docs.extend([past_chunk, future_chunk])
-    llm = FakeLLM(responses=[_llm_response("Summary of past news only.")])
-    agent = _StubResearchAgent(evidence=evidence, llm=llm)
-
-    result = agent.run("META", decision_ts=_ts(0))
-
-    # Only one chunk passed to LLM — the one from the past
-    assert result == "Summary of past news only."
-    # LLM was called exactly once (one chunk matched)
-    assert llm.index == 1

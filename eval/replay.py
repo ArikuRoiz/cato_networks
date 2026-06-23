@@ -47,6 +47,7 @@ from firm.agents.research import Evidence, Refusal, ResearchAgent, ResearchInput
 from firm.agents.risk import ApprovedTrade, HITLRequired, Rejected, RiskAgent, RiskInput
 from firm.config.settings import RiskPolicyConfig, load_risk_policy
 from firm.domain import Portfolio, RiskPolicy, Trade, TradeStatus
+from firm.domain.enums import RefusalReason
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.ports.llm import LLM
 from firm.ports.types import LLMResponse, NewsDoc
@@ -306,7 +307,7 @@ def _build_eval_graph(
         symbol: str = state.get("symbol", "")
         decision_ts: datetime = state.get("decision_ts") or datetime.now(tz=UTC)
         correlation_id: str = state.get("correlation_id", "")
-        research_result = state.get("research_result") or Refusal(reason="insufficient_evidence")
+        research_result = state.get("research_result") or Refusal(reason=RefusalReason.INSUFFICIENT_EVIDENCE)
         inp = PMInput(
             symbol=symbol,
             evidence=research_result,

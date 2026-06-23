@@ -15,28 +15,6 @@ from firm.domain import Bar
 # ---------------------------------------------------------------------------
 
 
-def compute_momentum_legacy(bars: list[Bar]) -> float:
-    """Return the full-window price-return momentum signal, clamped to [-1, 1].
-
-    Uses the (close[-1] - close[0]) / close[0] simple return over all bars
-    in the provided window.  Returns 0.0 when fewer than two bars are given.
-
-    .. deprecated::
-        Use ``firm.strategy.momentum.compute_momentum`` instead.  This function
-        is retained to avoid breaking any direct callers of ``signals.py``, but
-        the name ``compute_momentum`` is no longer exported from this module to
-        prevent shadowing the canonical implementation.
-    """
-    if len(bars) < 2:
-        return 0.0
-    oldest_close = float(bars[0].close)
-    newest_close = float(bars[-1].close)
-    if oldest_close == 0.0:
-        return 0.0
-    raw_return = (newest_close - oldest_close) / oldest_close
-    return float(_clamp(raw_return, -1.0, 1.0))
-
-
 # ---------------------------------------------------------------------------
 # Sentiment signal
 # ---------------------------------------------------------------------------

@@ -106,9 +106,12 @@ class TestResearchAgent:
         evidence_store: FakeEvidenceStore | None = None,
         llm: FakeLLM | None = None,
     ) -> ResearchAgent:
+        # Default FakeLLM returns "[]" so the agent can complete its LLM call;
+        # the chunk_registry / corpus state then determines the final Refusal/Evidence.
+        default_llm = llm or FakeLLM(responses=[_llm_response("[]")] * 10)
         return ResearchAgent(
             evidence=evidence_store or FakeEvidenceStore(),
-            llm=llm or FakeLLM(),
+            llm=default_llm,
             injection_guard=InjectionGuard(),
         )
 
@@ -125,7 +128,14 @@ class TestResearchAgent:
         assert result.reason == "insufficient_evidence"
 
     def test_detects_injection_in_corpus(self) -> None:
-        """Corpus containing injection text → Refusal(reason='injection_detected')."""
+        """Corpus containing injection text → all chunks filtered → Refusal(insufficient_evidence).
+
+        The ResearchAgent uses tool-calling: search_news filters unsafe chunks via
+        InjectionGuard before populating the chunk registry.  When all chunks are
+        unsafe, chunk_registry stays empty and the agent returns insufficient_evidence
+        (not a distinct injection_detected reason — injection is handled silently at
+        the retrieval boundary, not surfaced in the Refusal reason).
+        """
         store = FakeEvidenceStore()
         # All chunks contain an injection pattern
         store.docs.append(
@@ -140,7 +150,7 @@ class TestResearchAgent:
         )
         result = agent.run(inp)
         assert isinstance(result, Refusal)
-        assert result.reason == "injection_detected"
+        assert result.reason == "insufficient_evidence"
 
     def test_returns_evidence_on_valid_corpus(self) -> None:
         """Valid corpus and cooperative LLM → Evidence with parsed claims."""
@@ -171,6 +181,18 @@ class TestResearchAgent:
         @dataclass
         class ErrorLLM:
             def complete(self, messages: list[LLMMessage], *, model: str, max_tokens: int) -> Any:
+                return LLMError(message="connection refused", retryable=True)
+
+            def complete_with_tools(
+                self,
+                messages: list[LLMMessage],
+                tools: Any,
+                executors: Any,
+                *,
+                model: str,
+                max_tokens: int,
+                max_rounds: int = 5,
+            ) -> Any:
                 return LLMError(message="connection refused", retryable=True)
 
             def count_tokens(self, messages: list[LLMMessage], *, model: str) -> int:

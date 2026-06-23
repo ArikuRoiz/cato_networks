@@ -156,15 +156,9 @@ def make_pm_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
 
 
 def make_risk_node(
-    risk_policy: RiskPolicyConfig,
-    ports: NodePorts | None = None,
+    ports: NodePorts,
 ) -> Callable[[GraphState, RunnableConfig], dict[str, Any]]:
-    """Return a ``risk_node`` closed over the policy (and optionally ports).
-
-    When *ports* is supplied the real RiskAgent is used; otherwise the node
-    still enforces HITL but calls the domain check directly.
-    """
-    agent = RiskAgent(risk=risk_policy)
+    agent = RiskAgent(risk=ports.risk_policy)
 
     def risk_node(
         state: GraphState,
@@ -175,13 +169,7 @@ def make_risk_node(
             return {"cycle_outcome": CycleOutcome.ERROR, "error": "trade_proposal missing in risk_node"}
 
         proposal = _deserialise_proposal(proposal_raw)
-        if ports is None:
-            # WARNING: no NodePorts supplied — risk limits are evaluated against
-            # a synthetic $10,000 NAV.  Supply NodePorts.portfolio in production
-            # so HITL/rejection thresholds reflect the real portfolio NAV.
-            portfolio = _empty_portfolio()
-        else:
-            portfolio = ports.portfolio
+        portfolio = ports.portfolio
         prices = _extract_prices(proposal, portfolio)
         correlation_id = state.get("correlation_id", "")
 
@@ -672,13 +660,3 @@ def _extract_prices(proposal: object, portfolio: object) -> dict[str, Decimal]:
             if sym not in prices:
                 prices[sym] = holding.avg_cost
     return prices
-
-
-def _empty_portfolio() -> Portfolio:
-    """Return a synthetic portfolio for contexts where no real portfolio is available.
-
-    WARNING: risk limits (HITL threshold, max notional) are evaluated against this
-    $10,000 NAV, not the real portfolio.  Always supply ``NodePorts.portfolio`` in
-    production via ``make_risk_node(policy, ports=node_ports)``.
-    """
-    return Portfolio(cash=Decimal("10000"))

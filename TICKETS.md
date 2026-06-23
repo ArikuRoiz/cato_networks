@@ -1,3 +1,5 @@
+> **⚠️ SUPERSEDED — historical.** The active build plan is `docs/REFACTOR_TICKETS.md`. Current gaps are in `docs/REPO_AUDIT.md`. Target design is `docs/PROJECT_UNDERSTANDING.md`. This file is kept for history only.
+
 # The AI Investment Firm — Ticket Flow
 
 > Phase 3 (task breakdown). Tickets in **dependency order**, TDD-interleaved — each feature ticket turns one or more of the ten mandatory tests from red to green. No ticket touches more than ~5 files. Critical path is bolded in the graph.

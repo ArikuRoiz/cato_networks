@@ -21,14 +21,40 @@ from decimal import Decimal
 
 from langgraph.checkpoint.memory import MemorySaver
 
+from firm.adapters.fakes import FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
 from firm.config.settings import RiskPolicyConfig
+from firm.domain import Portfolio, RiskPolicy
+from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.orchestration.graph import _route_after_risk, build_graph
-from firm.orchestration.nodes import _hitl_exceeds_threshold, make_risk_node
+from firm.orchestration.nodes import NodePorts, _hitl_exceeds_threshold, make_risk_node
 from firm.orchestration.state import GraphState
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _make_ports(risk_policy: RiskPolicyConfig) -> NodePorts:
+    """Build a NodePorts with all-fake dependencies for unit tests."""
+    domain_policy = RiskPolicy(
+        max_trade_notional_pct=Decimal(str(risk_policy.max_trade_notional_pct)),
+        max_name_concentration_pct=Decimal(str(risk_policy.max_name_concentration_pct)),
+        daily_loss_halt_pct=Decimal(str(risk_policy.daily_loss_halt_pct)),
+        hitl_threshold_pct=Decimal(str(risk_policy.hitl_threshold_pct)),
+    )
+    return NodePorts(
+        evidence=FakeEvidenceStore(),
+        llm=FakeLLM(),
+        market_data=FakeMarketData(),
+        ledger=None,  # type: ignore[arg-type]
+        report_sink=FakeReportSink(),
+        guardrail=LedgerGuardrail(domain_policy),
+        injection_guard=InjectionGuard(),
+        risk_policy=risk_policy,
+        portfolio_id=uuid.uuid4(),
+        portfolio=Portfolio(cash=Decimal("10000")),
+    )
+
 
 _NAV_ESTIMATE = Decimal("10000")
 _HITL_THRESHOLD_PCT = Decimal("0.05")
@@ -175,7 +201,7 @@ def test_risk_node_missing_trade_proposal_returns_error() -> None:
     # Use make_risk_node directly for this path.
     from langchain_core.runnables import RunnableConfig
 
-    risk_fn = make_risk_node(policy)
+    risk_fn = make_risk_node(_make_ports(policy))
     result = risk_fn(state, RunnableConfig())
 
     assert result.get("cycle_outcome") == "error"
@@ -184,29 +210,19 @@ def test_risk_node_missing_trade_proposal_returns_error() -> None:
 
 def test_risk_node_below_threshold_sets_approved_trade() -> None:
     """notional < threshold must set approved_trade and not interrupt."""
-    # pm_node returns notional=1000, which exceeds threshold=500.
-    # Override: use a policy with a very high threshold so no interrupt fires.
-    high_threshold_policy = _make_risk_policy(hitl_threshold_pct=0.20)
-    saver2 = MemorySaver()
-    graph2 = build_graph(saver2, risk_policy=high_threshold_policy)
+    # Use make_risk_node directly to avoid the full pipeline; the graph-level
+    # interrupt mechanism is tested separately in test_risk_node_above_threshold_interrupts.
+    from langchain_core.runnables import RunnableConfig
 
-    # pm_node produces notional=1000; threshold at 20% of 10000 = 2000 → no interrupt.
-    events = list(
-        graph2.stream(
-            _make_state("1000"),
-            _thread_config(str(uuid.uuid4())),
-            stream_mode="updates",
-        )
-    )
-    interrupt_events = [e for e in events if "__interrupt__" in e]
-    assert not interrupt_events, "notional below threshold must not interrupt"
+    high_threshold_policy = _make_risk_policy(hitl_threshold_pct=0.20)  # threshold=2000
+    risk_fn = make_risk_node(_make_ports(high_threshold_policy))
 
-    final_values = {}
-    for event in events:
-        for _node, patch in event.items():
-            if isinstance(patch, dict):
-                final_values.update(patch)
-    assert final_values.get("cycle_outcome") == "filled"
+    # notional=1000 < threshold=2000 → no interrupt, approved_trade is set.
+    state = _make_state("1000")
+    result = risk_fn(state, RunnableConfig())
+
+    assert result.get("approved_trade") is not None, "below-threshold trade must be approved"
+    assert "cycle_outcome" not in result or result.get("cycle_outcome") is None
 
 
 def test_risk_node_at_threshold_does_not_interrupt() -> None:
@@ -214,7 +230,7 @@ def test_risk_node_at_threshold_does_not_interrupt() -> None:
     from langchain_core.runnables import RunnableConfig
 
     policy = _make_risk_policy(hitl_threshold_pct=0.10)  # threshold = 1000
-    risk_fn = make_risk_node(policy)
+    risk_fn = make_risk_node(_make_ports(policy))
 
     state: GraphState = GraphState(
         correlation_id=str(uuid.uuid4()),
@@ -241,19 +257,37 @@ def test_risk_node_at_threshold_does_not_interrupt() -> None:
 
 
 def test_risk_node_above_threshold_interrupts() -> None:
-    """notional > threshold must emit an __interrupt__ event."""
-    policy = _make_risk_policy()  # threshold = 500
-    saver = MemorySaver()
-    graph = build_graph(saver, risk_policy=policy)
+    """notional > threshold must emit an __interrupt__ event.
 
-    # pm_node always produces notional=1000 > 500
-    events = list(
-        graph.stream(
-            _make_state("1000"),
-            _thread_config(str(uuid.uuid4())),
-            stream_mode="updates",
-        )
-    )
+    Uses a minimal two-node graph (inject → risk) where the inject node copies
+    the pre-seeded trade_proposal into state, allowing risk_node to receive it
+    without running the full pipeline.
+    """
+    from langgraph.constants import END, START
+    from langgraph.graph import StateGraph
+
+    policy = _make_risk_policy()  # threshold = 500
+    ports = _make_ports(policy)
+    risk_fn = make_risk_node(ports)
+
+    def _inject_proposal(state: GraphState) -> dict:  # type: ignore[type-arg]
+        """Pass the pre-seeded trade_proposal through unchanged."""
+        return {}
+
+    builder: StateGraph = StateGraph(GraphState)  # type: ignore[type-arg]
+    builder.add_node("inject", _inject_proposal)
+    builder.add_node("risk", risk_fn)
+    builder.add_edge(START, "inject")
+    builder.add_edge("inject", "risk")
+    builder.add_edge("risk", END)
+    saver = MemorySaver()
+    mini_graph = builder.compile(checkpointer=saver)
+
+    # Pre-seed state with notional=1000 > threshold=500
+    state = _make_state("1000")
+    config = _thread_config(str(uuid.uuid4()))
+
+    events = list(mini_graph.stream(state, config, stream_mode="updates"))
     interrupt_events = [e for e in events if "__interrupt__" in e]
     assert interrupt_events, "notional above threshold must trigger HITL interrupt"
     assert interrupt_events[-1]["__interrupt__"][0].value["type"] == "hitl_request"

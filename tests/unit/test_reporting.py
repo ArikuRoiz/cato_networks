@@ -23,8 +23,7 @@ import openpyxl
 import pytest
 from slack_sdk.errors import SlackApiError
 
-from firm.adapters.excel_report import ExcelReportSink
-from firm.adapters.slack_report import SlackReportSink
+from firm.adapters.report import ExcelReportSink, SlackReportSink
 from firm.ports.report import ReportSink
 from firm.ports.types import DailyReport, HITLRequest
 
@@ -58,6 +57,7 @@ def _make_report() -> DailyReport:
                 "qty": 50,
                 "avg_cost": 139.50,
                 "current_price": 140.25,
+                "unrealized_pnl": 37.50,
             }
         ],
         citations=[
@@ -234,7 +234,7 @@ class TestExcelReportSink:
 class TestSlackReportSink:
     def _make_sink(self) -> tuple[SlackReportSink, MagicMock]:
         """Return a SlackReportSink wired to a mocked WebClient."""
-        with patch("firm.adapters.slack_report.WebClient") as mock_cls:
+        with patch("firm.adapters.report.slack.WebClient") as mock_cls:
             mock_client = MagicMock()
             mock_cls.return_value = mock_client
             sink = SlackReportSink(token="xoxb-test", channel="#trading-desk")

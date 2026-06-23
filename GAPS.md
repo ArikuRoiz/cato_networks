@@ -1,3 +1,5 @@
+> **⚠️ SUPERSEDED — historical.** Current gaps live in `docs/REPO_AUDIT.md`; target design in `docs/PROJECT_UNDERSTANDING.md`.
+
 # The AI Investment Firm — Gaps & Readiness
 
 > The three planning docs (`PROJECT_BRIEF`, `ARCHITECTURE`, `SPEC`) are aligned and submission-grade **as plans**. This is the punch-list of everything standing between a ready plan and a shippable submission. Four gap classes, ordered by what unblocks the most.

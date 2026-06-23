@@ -14,12 +14,14 @@ The adjudicated ResearchPlan feeds PM as the primary sentiment signal.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from firm.config.settings import RiskPolicyConfig, load_risk_policy
 from firm.orchestration.nodes import (
     MAX_DEBATE_ROUNDS,
     NodePorts,
@@ -36,6 +38,22 @@ from firm.orchestration.nodes import (
     make_technical_node,
 )
 from firm.orchestration.state import GraphState
+
+# Registry: node name → factory(ports) → callable
+_NODE_FACTORIES: dict[str, Callable[[NodePorts], Callable[..., dict[str, Any]]]] = {
+    "research": make_research_node,
+    "technical": make_technical_node,
+    "debate_bull": make_bull_node,
+    "debate_bear": make_bear_node,
+    "research_manager": make_research_manager_node,
+    "pm": make_pm_node,
+    "risk": make_risk_node,
+    "execution": make_execution_node,
+    "reporting": make_reporting_node,
+    "synthesis": make_synthesis_node,
+    "judge": make_judge_node,
+}
+
 
 # ---------------------------------------------------------------------------
 # Routing helpers
@@ -62,26 +80,12 @@ def _route_after_risk(state: GraphState) -> str:
 
 def build_graph(
     checkpointer: BaseCheckpointSaver,  # type: ignore[type-arg]
-    risk_policy: RiskPolicyConfig | None = None,
-    ports: NodePorts | None = None,
+    ports: NodePorts,
 ) -> CompiledStateGraph:  # type: ignore[type-arg]
-    resolved_policy = risk_policy if risk_policy is not None else load_risk_policy()
-    if ports is None:
-        raise ValueError("NodePorts must be supplied — build_graph() requires a fully wired ports container")
-
     builder: StateGraph = StateGraph(GraphState)  # type: ignore[type-arg]
 
-    builder.add_node("research", make_research_node(ports))
-    builder.add_node("technical", make_technical_node(ports))
-    builder.add_node("debate_bull", make_bull_node(ports))
-    builder.add_node("debate_bear", make_bear_node(ports))
-    builder.add_node("research_manager", make_research_manager_node(ports))
-    builder.add_node("pm", make_pm_node(ports))
-    builder.add_node("risk", make_risk_node(resolved_policy, ports))
-    builder.add_node("execution", make_execution_node(ports))
-    builder.add_node("reporting", make_reporting_node(ports))
-    builder.add_node("synthesis", make_synthesis_node(ports))
-    builder.add_node("judge", make_judge_node(ports))
+    for name, factory in _NODE_FACTORIES.items():
+        builder.add_node(name, factory(ports))
 
     # Parallel fan-out; debate_bull waits for both research and technical
     builder.add_edge(START, "research")

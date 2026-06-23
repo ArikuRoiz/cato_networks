@@ -1,7 +1,12 @@
 # Technical Overview — The AI Investment Firm
 
 > Architecture narrative, key design decisions, and documented limitations.
-> Companion to `ARCHITECTURE.md` (diagrams) and `docs/runbook.md` (operations).
+> Companion to `docs/runbook.md` (operations) and `docs/agents_and_tools.md` (agent roster).
+>
+> **This document describes the TARGET design** agreed in `docs/PROJECT_UNDERSTANDING.md`.
+> The build work to reach this target is tracked in `docs/REFACTOR_TICKETS.md`.
+> Where the current code differs (e.g. five-node eval graph, `portfolio_manager` still present),
+> this document reflects the target.
 
 ---
 
@@ -13,8 +18,7 @@ decision is grounded in cited evidence from a RAG corpus, persisted transactiona
 replayable end-to-end from the audit log.
 
 **The graded subject is production engineering, not trading alpha.** The strategy is
-deliberately simple (momentum + news-sentiment threshold) so every decision is explainable
-and the eval is reproducible.
+deliberately simple so every decision is explainable and the eval is reproducible.
 
 ---
 
@@ -26,12 +30,17 @@ Scheduler (scheduled triggers)         News Event Listener (debounced)
          └────────────────┬───────────────────────┘
                           ▼
                     [LangGraph Pipeline — durable, checkpointed]
-                    ┌─────────────────────────────────────────┐
-                    │  Research → PM → Risk ─┬─(auto)→ Exec  │
-                    │                        └─(HITL)→ Exec  │
-                    │                              ↓          │
-                    │                          Reporting      │
-                    └─────────────────────────────────────────┘
+          ┌──────────────────────────────────────────────────────────┐
+          │  research + technical (parallel)                         │
+          │       → debate (bull ⇄ bear ×N)                         │
+          │       → Research Manager   [SOLE decision agent — LLM]  │
+          │       → size_position + check_risk  [deterministic]      │
+          │       → RISK GUARDRAIL ─┬─(auto)──→ Execution           │
+          │                         └─(HITL)──→ Execution           │
+          │                                ↓                         │
+          │                          Reporting agent                 │
+          │                          Judge (independent auditor)     │
+          └──────────────────────────────────────────────────────────┘
                           │                    │
                    pgvector RAG            Postgres ledger
                    (news corpus)           (cash / lots / trades / audit)
@@ -39,17 +48,29 @@ Scheduler (scheduled triggers)         News Event Listener (debounced)
 
 **Agent responsibilities**
 
-| Agent | Input | Output | Failure mode |
+| Agent | Input | Output | Notes |
 |---|---|---|---|
-| Research | `(symbol, decision_ts)` | `Evidence \| Refusal` | `Refusal(reason="insufficient_evidence")` when corpus is empty |
-| PortfolioManager | `Evidence`, portfolio snapshot, bars | `TradeProposal \| Hold` | `Hold` when signal is below threshold |
-| Risk | `TradeProposal`, portfolio, prices | `ApprovedTrade \| HITLRequired \| Rejected` | `Rejected` on limit breach |
-| Execution | `ApprovedTrade`, portfolio, prices | `Fill \| ExecutionFailure` | `ExecutionFailure` on ledger write failure |
-| Reporting | cycle metadata | side-effect: Excel + Slack | no-op on sink failure (logged) |
+| Research | `(symbol, decision_ts)` | `Evidence \| Refusal` | RAG agent; grounded cited claims |
+| Technical | price bars | `TechnicalSignal \| TechnicalUnavailable` | RSI/MACD/Bollinger |
+| Debater (bull ⇄ bear) | evidence + TA + opponent history | `BullCase \| BearCase \| DebaterFailure` | One class, two roles |
+| Research Manager | debate transcript | `ResearchPlan \| ResearchManagerFailure` | **Sole direction decider** |
+| Reporting | cycle + ledger state | `ReportSent \| ReportFailure` | Memo + Excel + Slack |
+| Judge | full cycle + memo | `Verdict \| JudgeFailure` | Independent 1–5 coherence audit |
+
+**Deterministic sizing (not an agent):**
+
+| Step | Input | Output |
+|---|---|---|
+| `size_position` | `ResearchPlan` + NAV + price + policy | `TradeProposal \| Hold` |
+| `check_risk` | trade stub + portfolio + prices | `Approved \| Rejected` |
+
+`Portfolio Manager is NOT an agent.` It dissolved into the deterministic `size_position` and
+`check_risk` tools (Ticket R1). This removes the old two-decision-makers conflict where the PM
+could re-derive its own signal and override the Research Manager with a `Hold`.
 
 All failure modes are result unions — no exceptions cross agent boundaries. A pipeline
 failure checkpoints state and halts the cycle (fail-safe). No trade reaches the ledger
-without passing the Risk node.
+without passing the mandatory risk guardrail step.
 
 ---
 
@@ -102,12 +123,18 @@ supervisor or hierarchical router. Reasons:
   The graph mirrors the domain; every path is deterministic.
 - Replay is trivial: same inputs, same path.
 - A supervisor adds dynamic routing nondeterminism that fights auditability.
-- At five agents there is nothing to dynamically route.
+- At six agents there is nothing to dynamically route.
 
-**Interrupt/resume for HITL** — the Risk node calls `interrupt()` when notional exceeds
-the threshold. LangGraph checkpoints the full graph state to Postgres before pausing.
+**One graph, one source of truth.** Both `cli.py` and `eval/replay.py` must run
+`firm.orchestration.graph.build_graph`. The current code diverges (eval builds its own
+inline 5-node pipeline); convergence is Ticket R2.
+
+**Interrupt/resume for HITL** — the risk guardrail step calls `interrupt()` when notional
+exceeds 5% NAV. LangGraph checkpoints the full graph state to Postgres before pausing.
 A human responds via Slack; the graph resumes from the checkpoint, re-validates limits
 against the current bar, and proceeds to execution (or rejects if limits are now breached).
+Every human approve/edit/reject is recorded as an `ApprovalRow` in the audit log so
+override rate and latency are measurable process metrics (Ticket R6).
 
 ---
 
@@ -128,9 +155,14 @@ COMMIT;
 `ON CONFLICT DO NOTHING` on `idempotency_key` makes retried executions no-ops.
 Partial writes are impossible: either the entire transaction commits or nothing changes.
 
+The mandatory **risk guardrail** re-validates against `RiskPolicy` immediately before
+every `ledger_commit` call — even if `check_risk` already ran after sizing. This
+defense-in-depth means the LLM can never bypass risk limits regardless of what path the
+graph took to reach execution.
+
 ---
 
-## 7. Five key design decisions
+## 7. Key design decisions
 
 ### Decision 1 — Postgres for everything (ledger + checkpoints + RAG)
 
@@ -188,6 +220,24 @@ this scale.
 
 ---
 
+### Decision 6 — One decision-maker (Research Manager); Portfolio Manager dissolved
+
+**Why:** Having both a Research Manager (LLM direction) and a Portfolio Manager
+(deterministic but parallel signal) created a two-decision-makers conflict: the PM could
+re-derive its own momentum/sentiment signal and output `Hold` even when the Manager said
+`BUY`. The Judge agent existed partly to catch this incoherence. Collapsing to one
+decision-maker removes the conflict, eliminates hallucinated-direction risk, and keeps all
+quantities LLM-free (guaranteed no hallucinated numbers).
+
+**What replaced it:** `size_position(recommendation, conviction, nav, price, policy) -> qty`
+is pure arithmetic. `check_risk` wraps `RiskPolicy.check_trade` as an advisory step. The
+mandatory risk guardrail before execution is unchanged — defense-in-depth.
+
+**Trade-off accepted:** momentum is no longer a direction signal. If price momentum should
+influence *size*, it is passed as an input to `size_position`, never used to flip direction.
+
+---
+
 ## 8. Deployment view
 
 ```
@@ -210,19 +260,33 @@ Applying it is a deliberate non-goal for a local demo.
 resume from checkpoint); zero-downtime failover is not. The HA path is documented in
 `infra/main.tf` (RDS Multi-AZ) but not applied.
 
-**No live data feed.** Market data is frozen OHLCV CSVs. The `MarketDataSource` port
-makes adding a live feed adapter a one-file change.
+**No live data feed (replay/CI).** Market data is frozen OHLCV CSVs. The `MarketDataSource`
+port makes adding a live feed adapter a one-file change. In production, `yfinance` is used
+via the `fetch_live_news` tool and a live `MarketDataSource` adapter.
 
 **Synthetic news corpus.** `data/news/corpus.json` contains 50-100 synthetic articles,
 license-clean for commit. Real news requires a vendor subscription.
 
-**Synthetic LLM cassettes.** Cassette recordings were generated with the fake LLM adapter
-to keep CI offline. A production eval would record real Anthropic responses.
+**Cassette recordings generated with FakeLLM.** Cassettes were generated with the fake LLM
+adapter to keep CI offline; a production eval would record real Anthropic responses. The
+current cassette means eval metrics reflect fake responses, not real model quality.
+
+**Eval graph diverged (Ticket R2).** `eval/replay.py` builds its own inline 5-node pipeline
+rather than calling `firm.orchestration.graph.build_graph`. Until R2 is merged, the eval
+does not exercise the real pipeline topology described here.
+
+**Reporting emits hard-coded zeros (Ticket R7).** Current code hard-codes `pnl = Decimal("0")`
+and computes NAV cash-only without prices. Fix tracked in R7.
+
+**RAG embeddings are random (Ticket R7).** `_embed()` ignores the API key and returns a
+random vector; retrieval is keyword-only. Fix tracked in R7.
+
+**Observability spans are no-ops (Ticket R5).** Span decorators exist but emit nothing.
+Trace-replay currently relies solely on the audit log.
 
 **Long-only, v1.** No shorting or margin mechanics.
 
 **Deferred by design:**
 - `Trade`-as-Command / event-sourcing formalism
 - `ReportSink` as a pluggable-strategy registry
-- Rich-domain method placement (sizing logic is in the agent layer)
 - Four-way ISP port splitting

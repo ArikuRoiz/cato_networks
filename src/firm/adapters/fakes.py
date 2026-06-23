@@ -150,7 +150,18 @@ class FakeLLM:
         max_tokens: int,
         max_rounds: int = 5,
     ) -> LLMResponse | LLMError:
-        """Skip tool execution and return the next queued response directly."""
+        """Simulate one tool-call round per executor, then return the queued response.
+
+        Calls each registered executor once with a generic ``{"query": "test"}``
+        args dict so that side effects (e.g. populating a chunk registry) occur
+        before the final response is returned.  This mirrors what a real LLM
+        tool-loop would do on the first call round.
+        """
+        for name, fn in executors.items():
+            try:
+                fn({"query": "test", "k": 5})
+            except Exception:  # noqa: BLE001
+                pass
         return self.complete(messages, model=model, max_tokens=max_tokens)
 
     def count_tokens(

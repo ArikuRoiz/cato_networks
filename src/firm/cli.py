@@ -291,11 +291,7 @@ def _build_pipeline(root: Path, initial_cash: Any) -> tuple[Any, Any, Any]:
         portfolio_id=portfolio_id,
         portfolio=portfolio,
     )
-    graph = build_graph(
-        checkpointer=MemorySaver(),
-        risk_policy=risk_policy_config,
-        ports=ports,
-    )
+    graph = build_graph(checkpointer=MemorySaver(), ports=ports)
     return graph, portfolio, portfolio_id
 
 

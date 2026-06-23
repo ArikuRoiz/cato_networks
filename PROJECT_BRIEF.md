@@ -83,7 +83,7 @@ If the firm underperformed SPY, **say so**. Graders reward honesty over a flatte
 
 ## 4. The firm — agent decomposition
 
-Recommended: **5 agents with real typed contracts** over 8 thin ones. Each has typed inputs/outputs (Pydantic), declared tools, and defined failure modes.
+Requirement: **≥4 specialized agents with real typed contracts** — each with typed inputs/outputs (Pydantic), declared tools, and defined failure modes. Our current target decomposition is in `docs/PROJECT_UNDERSTANDING.md`.
 
 | Agent | Responsibility | Key tools | Fails by |
 |---|---|---|---|

@@ -86,7 +86,7 @@ the-ai-firm/
 │   ├── ports/              # external-IO seams only (live↔replay swap): MarketDataSource, EvidenceStore, LLM, ReportSink
 │   ├── persistence/        # LedgerRepository — concrete Postgres, NOT behind a port; tested vs ephemeral PG
 │   ├── adapters/           # concrete impls of the ports: pgvector, anthropic, slack, excel, + replay/fakes
-│   ├── agents/             # research, pm, risk, execution, reporting — typed I/O, defined failure modes
+│   ├── agents/             # research, technical, debater, research_manager, reporting, judge — typed I/O, defined failure modes
 │   ├── orchestration/      # LangGraph graph, nodes, lean handoff state, checkpointer
 │   ├── rag/                # hybrid retrieve + rerank + citation + no-lookahead filter
 │   ├── observability/      # OTel/Langfuse setup, correlation-id propagation

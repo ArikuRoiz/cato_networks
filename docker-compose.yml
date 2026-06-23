@@ -18,7 +18,7 @@ services:
       retries: 10
 
   langfuse:
-    image: ghcr.io/langfuse/langfuse:latest
+    image: ghcr.io/langfuse/langfuse:2
     environment:
       DATABASE_URL: postgresql://firm:firm@postgres:5432/firm
       NEXTAUTH_URL: http://localhost:3000
@@ -32,6 +32,8 @@ services:
 
   firm-app:
     build: .
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://firm:firm@postgres:5432/firm
       LANGFUSE_HOST: http://langfuse:3000
@@ -41,8 +43,9 @@ services:
       langfuse:
         condition: service_started
     volumes:
-      - ./data:/app/data:ro
+      - ./data:/app/data
       - ./config:/app/config:ro
+      - ./reports:/app/reports
 
 volumes:
   postgres_data:

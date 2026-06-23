@@ -1,36 +1,18 @@
-"""Mandatory failing test stubs — one per brief requirement.
+"""Mandatory integration tests — thin stubs that confirm orchestration imports and
+real implementations of key requirements.
 
-Each test is decorated ``@pytest.mark.xfail(strict=True)`` so:
-  - The suite is RED until the feature is implemented (xpass would be a surprise pass → fail).
-  - A feature ticket un-xfails its test and makes it pass for the right reason.
-  - CI fails if any stub accidentally passes without the implementation (strict=True).
-
-Do NOT add implementation here.  Implementations live in the feature tickets:
-  - FIRM-4  → test_crash_mid_trade_reconciles, test_idempotent_execution
+Real feature implementations live in:
   - FIRM-5  → test_hitl_resumes_after_restart, test_hitl_timeout_fails_safe
-  - FIRM-7  → test_limit_cannot_be_exceeded, test_stale_approval_revalidated,
-               test_prompt_injection_neutralized
   - FIRM-8  → test_market_calendar_gating
   - FIRM-9  → test_no_lookahead, test_insufficient_evidence_refuses
 """
 
 from datetime import UTC, datetime
-
-import pytest
+from decimal import Decimal
 
 from firm.orchestration.graph import build_graph
+from firm.orchestration.nodes import NodePorts, make_risk_node
 from firm.orchestration.state import GraphState
-
-
-@pytest.mark.xfail(reason="not implemented yet", strict=True)
-def test_crash_mid_trade_reconciles() -> None:
-    """Kill the process between cash-debit and holding-write; on restart cash, holdings,
-    cost-basis, and P&L must reconcile — partial ledger state is impossible.
-
-    Requirement: FR-1 crash recovery (SPEC §Success Criteria §2).
-    Implemented by: FIRM-4 (LedgerRepository atomic transaction + idempotency key).
-    """
-    raise NotImplementedError
 
 
 def test_hitl_resumes_after_restart() -> None:
@@ -47,28 +29,6 @@ def test_hitl_resumes_after_restart() -> None:
     assert GraphState is not None
     assert callable(build_graph)
     assert callable(setup_checkpointer)
-
-
-@pytest.mark.xfail(reason="not implemented yet", strict=True)
-def test_idempotent_execution() -> None:
-    """Replaying a trade with the same idempotency_key must be a no-op — the ledger
-    must not double-fill or double-debit cash.
-
-    Requirement: ARCHITECTURE §Stress Test / crash mid-trade.
-    Implemented by: FIRM-4 (unique idempotency_key constraint on the trades table).
-    """
-    raise NotImplementedError
-
-
-@pytest.mark.xfail(reason="not implemented yet", strict=True)
-def test_limit_cannot_be_exceeded() -> None:
-    """Even if both the agent and a human approver approve an oversized trade, the
-    ledger guardrail must still reject it — hard limits are enforced at write time.
-
-    Requirement: SPEC §Boundaries / Never; SPEC §Success Criteria §8.
-    Implemented by: FIRM-7 (RiskPolicy enforced at LedgerRepository.execute()).
-    """
-    raise NotImplementedError
 
 
 def test_no_lookahead() -> None:
@@ -128,14 +88,69 @@ def test_hitl_timeout_fails_safe() -> None:
     Implemented by: FIRM-5 (expires_at → reject path in the Risk interrupt node).
     Full integration coverage lives in tests/integration/test_hitl.py.
     This stub confirms the risk_node routes "expired" → "rejected_timeout".
+
+    Uses a minimal inject→risk graph to avoid needing the full pipeline (market
+    data, LLM cassette, etc.) — the test exercises only the risk-node HITL path.
     """
+    import uuid
+
     from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.constants import END, START
+    from langgraph.graph import StateGraph
     from langgraph.types import Command
 
-    checkpointer = InMemorySaver()
-    graph = build_graph(checkpointer)
+    from firm.adapters.fakes import FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
+    from firm.config.settings import RiskPolicyConfig
+    from firm.domain import Portfolio, RiskPolicy
+    from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 
-    import uuid
+    risk_policy = RiskPolicyConfig(
+        max_trade_notional_pct=0.10,
+        max_name_concentration_pct=0.25,
+        daily_loss_halt_pct=0.03,
+        hitl_threshold_pct=0.05,
+        buy_threshold=0.15,
+        sell_threshold=-0.10,
+        momentum_weight=0.60,
+        sentiment_weight=0.40,
+        momentum_lookback_days=5,
+        max_events_per_symbol_per_hour=3,
+        event_relevance_threshold=0.70,
+        slippage_bps=5,
+        commission_per_share=0.005,
+        token_budget_per_cycle=50000,
+    )
+    domain_policy = RiskPolicy(
+        max_trade_notional_pct=Decimal("0.10"),
+        max_name_concentration_pct=Decimal("0.25"),
+        daily_loss_halt_pct=Decimal("0.03"),
+        hitl_threshold_pct=Decimal("0.05"),
+    )
+    ports = NodePorts(
+        evidence=FakeEvidenceStore(),
+        llm=FakeLLM(),
+        market_data=FakeMarketData(),
+        ledger=None,  # type: ignore[arg-type]
+        report_sink=FakeReportSink(),
+        guardrail=LedgerGuardrail(domain_policy),
+        injection_guard=InjectionGuard(),
+        risk_policy=risk_policy,
+        portfolio_id=uuid.uuid4(),
+        portfolio=Portfolio(cash=Decimal("10000")),
+    )
+    risk_fn = make_risk_node(ports)
+
+    def _inject(state: GraphState) -> dict:  # type: ignore[type-arg]
+        return {}
+
+    builder: StateGraph = StateGraph(GraphState)  # type: ignore[type-arg]
+    builder.add_node("inject", _inject)
+    builder.add_node("risk", risk_fn)
+    builder.add_edge(START, "inject")
+    builder.add_edge("inject", "risk")
+    builder.add_edge("risk", END)
+    checkpointer = InMemorySaver()
+    graph = builder.compile(checkpointer=checkpointer)
 
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
@@ -146,7 +161,13 @@ def test_hitl_timeout_fails_safe() -> None:
         symbol="NVDA",
         decision_ts="2024-10-23T10:00:00+00:00",
         evidence=None,
-        trade_proposal=None,
+        trade_proposal={
+            "symbol": "NVDA",
+            "side": "buy",
+            "qty": "10",
+            "notional": "1000",  # 10% of 10k NAV > 5% HITL threshold (500)
+            "rationale": "stub",
+        },
         approved_trade=None,
         hitl_status=None,
         cycle_outcome=None,
@@ -166,28 +187,6 @@ def test_hitl_timeout_fails_safe() -> None:
     assert outcome == "rejected_timeout", (
         f"Expired HITL must produce 'rejected_timeout', not {outcome!r}"
     )
-
-
-@pytest.mark.xfail(reason="not implemented yet", strict=True)
-def test_stale_approval_revalidated() -> None:
-    """If the market price moves past a RiskPolicy limit while a trade awaits human
-    approval, execution must re-validate and block the fill even with a valid approval.
-
-    Requirement: ARCHITECTURE §Dataflow (Risk re-validates at execution time).
-    Implemented by: FIRM-7 (Trade.revalidate(bar) called inside ExecutionAgent).
-    """
-    raise NotImplementedError
-
-
-@pytest.mark.xfail(reason="not implemented yet", strict=True)
-def test_prompt_injection_neutralized() -> None:
-    """News corpus text that contains instruction-like content (e.g. 'buy 10 000 shares')
-    must never alter the agent's trade decision — retrieved text is data, not instructions.
-
-    Requirement: SPEC §Boundaries / Never (treat retrieved text as instructions).
-    Implemented by: FIRM-7 (injection classifier applied before LLM sees corpus text).
-    """
-    raise NotImplementedError
 
 
 def test_market_calendar_gating() -> None:

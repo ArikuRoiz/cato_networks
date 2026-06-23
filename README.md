@@ -1,7 +1,9 @@
 # The AI Investment Firm
 
-Multi-agent paper-trading desk: five agents (Research → PM → Risk → Execution → Reporting) in a
-LangGraph pipeline, large trades pausing for human approval, every decision grounded in cited evidence.
+Multi-agent paper-trading desk: Research, Technical, Debater (bull ⇄ bear), Research Manager
+(sole decider), Reporting, and Judge agents in a LangGraph pipeline. Risk + Execution are
+deterministic guardrail steps, not agents. Large trades pause for human approval; every decision
+is grounded in cited evidence.
 
 **Replay window:** Oct 21-25 2024 (NVDA earnings week) | **Watchlist:** AAPL, MSFT, NVDA, GOOGL, META, AMD
 
@@ -38,9 +40,24 @@ No live API needed — `make demo` replays from recorded cassettes.
 ## Architecture
 
 ```
-Research → PortfolioManager → Risk ──(auto)──→ Execution → Reporting
-                                  └──(HITL)──→ human (Slack) → Execution
+research + technical (parallel)
+        → debate (bull ⇄ bear ×N)
+        → Research Manager (decide direction + conviction)   [SOLE decider — LLM]
+        → size_position tool (deterministic sizing) + check_risk
+        → [RISK GUARDRAIL]  →(>5% NAV)→ HITL interrupt → human approve/edit/reject
+        → Execution (atomic ledger write)
+        → Reporting agent (memo + Excel/Slack)
+        → Judge (independent coherence audit, recorded)
 ```
+
+**Agents (LLM judgment):** Research · Technical · Debater (one class, two roles) ·
+Research Manager (sole decision agent) · Reporting · Judge.
+
+**Portfolio Manager is not an agent** — it dissolves into the deterministic `size_position` +
+`check_risk` tools. Risk and Execution are mandatory deterministic gates, not agents.
+
+**Tools layer:** `search_news` · `fetch_live_news` · `price_indicators` · `compute_signal` ·
+`size_position` · `check_risk` · `make_report` · `ledger_commit`.
 
 Four protocol ports (`MarketDataSource`, `EvidenceStore`, `LLM`, `ReportSink`) isolate live from
 replay. The ledger is a concrete Postgres repository — tested against a real database, not mocked.
