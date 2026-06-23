@@ -365,7 +365,12 @@ def _deserialise_proposal(raw: dict[str, Any]) -> TradeProposal | Hold:
 
 
 def _parse_window_dates(window_config: dict[str, Any]) -> list[datetime]:
-    """Return a list of UTC midnight datetimes for each day in the replay window."""
+    """Return one UTC datetime per replay day, anchored at mid-session.
+
+    Time-of-day matters: the execution node gates fills on NYSE market hours, so a
+    midnight timestamp reads as "market closed" and every trade is rejected. We
+    anchor each cycle at 16:00 UTC (≈ noon ET) so real trading days pass the gate.
+    """
     from datetime import date
 
     start = date.fromisoformat(str(window_config["start_date"]))
@@ -373,7 +378,7 @@ def _parse_window_dates(window_config: dict[str, Any]) -> list[datetime]:
     days: list[datetime] = []
     current = start
     while current <= end:
-        days.append(datetime(current.year, current.month, current.day, tzinfo=UTC))
+        days.append(datetime(current.year, current.month, current.day, 16, 0, tzinfo=UTC))
         current += timedelta(days=1)
     return days
 
