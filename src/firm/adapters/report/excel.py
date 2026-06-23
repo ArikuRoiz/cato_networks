@@ -56,7 +56,16 @@ def _write_summary(ws: Worksheet, report: DailyReport) -> None:
     ws.title = "Summary"
     _bold_header(ws, ["date", "nav", "pnl", "benchmark_return", "alpha", "num_trades"])
     alpha = float(report.pnl / report.nav) - report.benchmark_return if report.nav else 0.0
-    ws.append([str(report.date), float(report.nav), float(report.pnl), report.benchmark_return, alpha, len(report.trades)])
+    ws.append(
+        [
+            str(report.date),
+            float(report.nav),
+            float(report.pnl),
+            report.benchmark_return,
+            alpha,
+            len(report.trades),
+        ]
+    )
 
 
 def _write_positions(ws: Worksheet, report: DailyReport) -> None:
@@ -68,13 +77,34 @@ def _write_positions(ws: Worksheet, report: DailyReport) -> None:
 
 def _write_trades(ws: Worksheet, report: DailyReport) -> None:
     ws.title = "Trades"
-    _bold_header(ws, ["cycle_id", "symbol", "side", "qty", "fill_price", "slippage", "commission", "status", "ts"])
+    _bold_header(
+        ws,
+        [
+            "cycle_id",
+            "symbol",
+            "side",
+            "qty",
+            "fill_price",
+            "slippage",
+            "commission",
+            "status",
+            "ts",
+        ],
+    )
     for t in report.trades:
-        ws.append([
-            t["cycle_id"], t["symbol"], t["side"], t["qty"],
-            t["fill_price"], t["slippage"], t["commission"], t["status"],
-            t.get("ts", ""),
-        ])
+        ws.append(
+            [
+                t["cycle_id"],
+                t["symbol"],
+                t["side"],
+                t["qty"],
+                t["fill_price"],
+                t["slippage"],
+                t["commission"],
+                t["status"],
+                t.get("ts", ""),
+            ]
+        )
 
 
 def _write_evidence(ws: Worksheet, report: DailyReport) -> None:

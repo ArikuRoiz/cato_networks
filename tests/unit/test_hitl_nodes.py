@@ -21,11 +21,17 @@ from decimal import Decimal
 
 from langgraph.checkpoint.memory import MemorySaver
 
-from firm.adapters.fakes import FakeCalendar, FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
+from firm.adapters.fakes import (
+    FakeCalendar,
+    FakeEvidenceStore,
+    FakeLLM,
+    FakeMarketData,
+    FakeReportSink,
+)
 from firm.config.settings import RiskPolicyConfig
 from firm.domain import Portfolio, RiskPolicy
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
-from firm.orchestration.graph import _route_after_risk, build_graph
+from firm.orchestration.graph import _route_after_risk
 from firm.orchestration.nodes import NodePorts, _hitl_exceeds_threshold, make_risk_node
 from firm.orchestration.state import GraphState
 

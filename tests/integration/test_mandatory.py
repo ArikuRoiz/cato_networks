@@ -10,7 +10,6 @@ Real feature implementations live in:
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from firm.orchestration.graph import build_graph
 from firm.orchestration.nodes import NodePorts, make_risk_node
 from firm.orchestration.state import GraphState
 
@@ -99,7 +98,13 @@ def test_hitl_timeout_fails_safe() -> None:
     from langgraph.graph import StateGraph
     from langgraph.types import Command
 
-    from firm.adapters.fakes import FakeCalendar, FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
+    from firm.adapters.fakes import (
+        FakeCalendar,
+        FakeEvidenceStore,
+        FakeLLM,
+        FakeMarketData,
+        FakeReportSink,
+    )
     from firm.config.settings import RiskPolicyConfig
     from firm.domain import Portfolio, RiskPolicy
     from firm.domain.guardrails import InjectionGuard, LedgerGuardrail

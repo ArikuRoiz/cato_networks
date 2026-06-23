@@ -8,8 +8,6 @@ from __future__ import annotations
 import math
 from decimal import Decimal
 
-from firm.domain import Bar
-
 # ---------------------------------------------------------------------------
 # Momentum signal
 # ---------------------------------------------------------------------------

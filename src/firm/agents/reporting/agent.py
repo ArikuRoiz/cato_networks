@@ -1,19 +1,19 @@
 """ReportingAgent — build a DailyReport and dispatch it via the ReportSink.
 
 NAV formula:
-    NAV = cash + Σ(qty × current_price) for each held symbol.
+    NAV = cash + Σ(qty x current_price) for each held symbol.
     When prices are unavailable for a symbol, avg_cost is used as a fallback
     so NAV is always computed (never hard-coded).
 
 P&L formula:
-    pnl = Σ((current_price − avg_cost) × qty) across all open positions.
+    pnl = Σ((current_price - avg_cost) x qty) across all open positions.
     This is total unrealised P&L vs cost basis for the cycle snapshot.
     Realised P&L from intra-cycle fills is not separately tracked here because
     Trade objects do not carry a realised_pnl field; callers that need intra-day
     realised P&L should query the ledger directly.
 
 Benchmark formula:
-    benchmark_return = (spy_today − spy_prev) / spy_prev
+    benchmark_return = (spy_today - spy_prev) / spy_prev
     where spy_today  = prices["SPY"] (close of report_date)
       and spy_prev   = prices["SPY_PREV"] (close of the preceding trading day).
     If either price is absent, benchmark_return is 0.0 and no error is raised.
@@ -116,7 +116,7 @@ def _build_positions(
 
 
 def _compute_nav(portfolio: Portfolio, prices: dict[str, Decimal]) -> Decimal:
-    """NAV = cash + Σ(qty × current_price).
+    """NAV = cash + Σ(qty x current_price).
 
     Falls back to avg_cost for any symbol missing from *prices* so NAV is
     always computable even when market data is partially absent.
@@ -133,15 +133,13 @@ def _compute_unrealized_pnl(
     portfolio: Portfolio,
     prices: dict[str, Decimal],
 ) -> Decimal:
-    """Total unrealised P&L = Σ((current_price − avg_cost) × qty)."""
-    return sum(
-        (
-            (_effective_price(symbol, prices, holding.avg_cost) - holding.avg_cost)
-            * holding.quantity
-        )
+    """Total unrealised P&L = Σ((current_price - avg_cost) x qty)."""
+    terms = (
+        (_effective_price(symbol, prices, holding.avg_cost) - holding.avg_cost) * holding.quantity
         for symbol, holding in portfolio.holdings.items()
         if holding.quantity > Decimal("0")
     )
+    return sum(terms, Decimal("0"))
 
 
 def _compute_benchmark_return(prices: dict[str, Decimal]) -> float:

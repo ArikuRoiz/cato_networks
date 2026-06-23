@@ -17,7 +17,6 @@ import pytest
 from eval.replay import _FakeLedger
 from firm.domain import Portfolio
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -99,7 +98,13 @@ def test_record_approval_accumulates_multiple_decisions() -> None:
 
 def _make_ports_with_fake_ledger(hitl_threshold_pct: float = 0.05) -> object:
     """Build NodePorts with _FakeLedger for HITL recording tests."""
-    from firm.adapters.fakes import FakeCalendar, FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
+    from firm.adapters.fakes import (
+        FakeCalendar,
+        FakeEvidenceStore,
+        FakeLLM,
+        FakeMarketData,
+        FakeReportSink,
+    )
     from firm.config.settings import RiskPolicyConfig
     from firm.domain import RiskPolicy
     from firm.domain.guardrails import InjectionGuard, LedgerGuardrail

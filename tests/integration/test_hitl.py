@@ -24,7 +24,13 @@ from decimal import Decimal
 import pytest
 from testcontainers.postgres import PostgresContainer
 
-from firm.adapters.fakes import FakeCalendar, FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
+from firm.adapters.fakes import (
+    FakeCalendar,
+    FakeEvidenceStore,
+    FakeLLM,
+    FakeMarketData,
+    FakeReportSink,
+)
 from firm.config.settings import RiskPolicyConfig
 from firm.domain import Portfolio, RiskPolicy
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
@@ -80,7 +86,7 @@ def _make_ports() -> NodePorts:
 def _make_initial_state(correlation_id: str) -> GraphState:
     """Return a ``GraphState`` with trade_proposal=notional=1000 that triggers HITL.
 
-    hitl_threshold_pct=0.05 × NAV(10000) = 500, so notional=1000 > 500 guarantees
+    hitl_threshold_pct=0.05 x NAV(10000) = 500, so notional=1000 > 500 guarantees
     the interrupt path when the risk node runs via the minimal inject→risk graph.
     """
     return GraphState(

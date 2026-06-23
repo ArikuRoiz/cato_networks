@@ -47,7 +47,7 @@ class SlackReportSink:
         token: str | None = None,
         channel: str = "#trading-desk",
     ) -> None:
-        resolved_token = token or os.getenv("SLACK_BOT_TOKEN", "")
+        resolved_token: str = token or os.getenv("SLACK_BOT_TOKEN") or ""
         self._channel = channel or os.getenv("SLACK_CHANNEL", "#trading-desk")
         self._dry_run = not _is_real_token(resolved_token)
         self._client = _build_client(resolved_token) if not self._dry_run else None
@@ -193,8 +193,7 @@ def _format_positions(positions: list[PositionRecord]) -> str:
     if not positions:
         return "_No open positions_"
     return "\n".join(
-        f"• {p['symbol']}: {p['qty']:.0f} shares @ ${p['current_price']:,.2f}"
-        for p in positions
+        f"• {p['symbol']}: {p['qty']:.0f} shares @ ${p['current_price']:,.2f}" for p in positions
     )
 
 

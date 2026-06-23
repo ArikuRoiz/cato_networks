@@ -63,7 +63,11 @@ class ResearchAgent(BaseAgent[ResearchInput, Evidence | Refusal]):
             query = str(args.get("query", inp.symbol))
             k = min(int(args.get("k", 5)), 10)
             chunks = self._evidence.search(inp.symbol, before=inp.decision_ts, k=k, query=query)
-            safe = [c for c in chunks if not isinstance(self._injection_guard.scan(c.text), InjectionDetected)]
+            safe = [
+                c
+                for c in chunks
+                if not isinstance(self._injection_guard.scan(c.text), InjectionDetected)
+            ]
             if not safe:
                 return "No safe news excerpts found for this query."
             for c in safe:
@@ -91,7 +95,11 @@ class ResearchAgent(BaseAgent[ResearchInput, Evidence | Refusal]):
         )
 
         if isinstance(resp, LLMError):
-            reason = RefusalReason.LLM_ERROR_RETRYABLE if resp.retryable else RefusalReason.LLM_ERROR_NON_RETRYABLE
+            reason = (
+                RefusalReason.LLM_ERROR_RETRYABLE
+                if resp.retryable
+                else RefusalReason.LLM_ERROR_NON_RETRYABLE
+            )
             return Refusal(reason=reason)
 
         if not chunk_registry:

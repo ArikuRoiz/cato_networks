@@ -15,7 +15,7 @@ Design decisions
 from __future__ import annotations
 
 import logging
-from typing import Sequence
+from collections.abc import Sequence
 
 from firm.ports.report import ReportSink
 from firm.ports.types import ApprovalResult, DailyReport, HITLRequest

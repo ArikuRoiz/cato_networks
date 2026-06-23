@@ -147,7 +147,9 @@ class LedgerRepository:
             if existing is not None:
                 return existing
             filled = executor(session, trade, portfolio_id)
-            _append_audit(session, filled.cycle_id, "system", "trade.filled", filled.model_dump(mode="json"))
+            _append_audit(
+                session, filled.cycle_id, "system", "trade.filled", filled.model_dump(mode="json")
+            )
             session.commit()
             return filled
 
@@ -167,7 +169,13 @@ def _execute_buy(
     fill_price = trade.requested_price * (Decimal("1") + _SLIPPAGE_BPS)
     commission = trade.qty * _COMMISSION_PER_SHARE
     _debit_cash(portfolio_row, trade.qty * fill_price + commission)
-    _insert_lot(session, _upsert_holding(session, portfolio_row, trade.symbol), trade, fill_price, opened_at=opened_at)
+    _insert_lot(
+        session,
+        _upsert_holding(session, portfolio_row, trade.symbol),
+        trade,
+        fill_price,
+        opened_at=opened_at,
+    )
     filled = _fill_trade(trade, fill_price, commission)
     return _trade_from_row(_insert_trade_row(session, filled, portfolio_id))
 

@@ -22,10 +22,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from firm.adapters.llm_cassette import CassetteNotFound, CassetteLLM
+from firm.adapters.llm_cassette import CassetteLLM, CassetteNotFound
 from firm.ports.llm import LLM
 from firm.ports.types import LLMError, LLMMessage, LLMResponse, ToolDef, ToolExecutors
-
 
 # ---------------------------------------------------------------------------
 # Types
@@ -145,15 +144,13 @@ def _build_record_llm(cassette_path: Path) -> CassetteLLM:
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
-        raise ValueError(
-            "CASSETTE_MODE=record requires ANTHROPIC_API_KEY to be set"
-        )
+        raise ValueError("CASSETTE_MODE=record requires ANTHROPIC_API_KEY to be set")
     cassette_path.parent.mkdir(parents=True, exist_ok=True)
     inner = AnthropicLLM(api_key=api_key)
     return CassetteLLM(cassette_path=cassette_path, mode="record", inner=inner)
 
 
-def _build_fake_llm() -> "FakeLLM":  # noqa: F821
+def _build_fake_llm() -> LLM:
     from firm.adapters.fakes import FakeLLM
 
     canned = LLMResponse(

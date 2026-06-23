@@ -51,7 +51,9 @@ class GraphState(TypedDict, total=False):
     trade_proposal: dict[str, Any] | None
     approved_trade: dict[str, Any] | None
     hitl_status: str | None  # HITLStatus: "pending" | "approved" | "rejected" | "expired"
-    cycle_outcome: str | None  # CycleOutcome: "filled" | "rejected" | "rejected_timeout" | "hold" | "error"
+    cycle_outcome: (
+        str | None
+    )  # CycleOutcome: "filled" | "rejected" | "rejected_timeout" | "hold" | "error"
     synthesis: dict[str, Any] | None
     verdict: dict[str, Any] | None
     error: str | None

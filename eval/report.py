@@ -71,10 +71,7 @@ def _alpha_verdict(metrics: EvalMetrics) -> str:
             f"has been applied."
         )
     if metrics.alpha == 0.0:
-        return (
-            f"**Result: the strategy matched SPY exactly "
-            f"({metrics.total_return:+.2%}).**"
-        )
+        return f"**Result: the strategy matched SPY exactly ({metrics.total_return:+.2%}).**"
     return (
         f"**Result: the strategy outperformed SPY by "
         f"{metrics.alpha:+.2%} over the replay window.**  "
@@ -110,9 +107,7 @@ def _guardrail_events(cycles: list[CycleRecord]) -> str:
         lines.append("No guardrail events were triggered during this replay.")
         return "\n".join(lines)
 
-    lines.append(
-        f"{len(triggered)} guardrail event(s) occurred during this replay:\n"
-    )
+    lines.append(f"{len(triggered)} guardrail event(s) occurred during this replay:\n")
     for c in triggered:
         lines.append(
             f"- **{c.symbol}** at `{c.decision_ts[:10]}` "
@@ -147,40 +142,42 @@ def _sample_trade(cycles: list[CycleRecord]) -> str:
 
 def _limitations() -> str:
     """Render the Limitations and Caveats section."""
-    return "\n".join([
-        "## Limitations and Caveats",
-        "",
-        "The following limitations apply to this eval and must be considered when "
-        "interpreting results:",
-        "",
-        "- **Synthetic corpus.** The news corpus (`data/news/corpus.json`) consists "
-        "of fixture articles written to exercise the pipeline, not scraped from a "
-        "live feed.  Sentiment and relevance scores reflect the fixture content.",
-        "",
-        "- **Paper trading only.** No real money is involved.  Fill prices use a "
-        "simplified 5-bps slippage + \\$0.005/share commission model; real fills "
-        "would differ.",
-        "",
-        "- **Simplified NAV accounting.** The eval harness tracks NAV using "
-        "closing prices from frozen CSV bars.  Intraday moves and dividends are "
-        "not modelled.",
-        "",
-        "- **No LLM sentiment in eval.** The `PortfolioManagerAgent` falls back "
-        "to keyword-based sentiment scoring in eval because the eval harness "
-        "uses a cassette or fake LLM.  Live runs use the full LLM sentiment path.",
-        "",
-        "- **HITL auto-approved in eval.** When the risk agent requires human "
-        "approval the eval harness auto-approves the trade so the replay can "
-        "complete without human intervention.  In production the trade is held "
-        "pending a human decision.",
-        "",
-        "- **Short replay window.** The replay covers only 5 trading days "
-        "(Oct 21-25 2024), which is insufficient for statistically meaningful "
-        "Sharpe or alpha estimates.  Results should be interpreted as a "
-        "functional smoke-test of the pipeline, not an investment performance "
-        "assessment.",
-        "",
-        "- **Strategy is deliberately simple.** Momentum + news-sentiment is "
-        "intentionally rudimentary; trading alpha is not the graded objective.  "
-        "Underperformance vs SPY is expected and not a defect.",
-    ])
+    return "\n".join(
+        [
+            "## Limitations and Caveats",
+            "",
+            "The following limitations apply to this eval and must be considered when "
+            "interpreting results:",
+            "",
+            "- **Synthetic corpus.** The news corpus (`data/news/corpus.json`) consists "
+            "of fixture articles written to exercise the pipeline, not scraped from a "
+            "live feed.  Sentiment and relevance scores reflect the fixture content.",
+            "",
+            "- **Paper trading only.** No real money is involved.  Fill prices use a "
+            "simplified 5-bps slippage + \\$0.005/share commission model; real fills "
+            "would differ.",
+            "",
+            "- **Simplified NAV accounting.** The eval harness tracks NAV using "
+            "closing prices from frozen CSV bars.  Intraday moves and dividends are "
+            "not modelled.",
+            "",
+            "- **No LLM sentiment in eval.** The `PortfolioManagerAgent` falls back "
+            "to keyword-based sentiment scoring in eval because the eval harness "
+            "uses a cassette or fake LLM.  Live runs use the full LLM sentiment path.",
+            "",
+            "- **HITL auto-approved in eval.** When the risk agent requires human "
+            "approval the eval harness auto-approves the trade so the replay can "
+            "complete without human intervention.  In production the trade is held "
+            "pending a human decision.",
+            "",
+            "- **Short replay window.** The replay covers only 5 trading days "
+            "(Oct 21-25 2024), which is insufficient for statistically meaningful "
+            "Sharpe or alpha estimates.  Results should be interpreted as a "
+            "functional smoke-test of the pipeline, not an investment performance "
+            "assessment.",
+            "",
+            "- **Strategy is deliberately simple.** Momentum + news-sentiment is "
+            "intentionally rudimentary; trading alpha is not the graded objective.  "
+            "Underperformance vs SPY is expected and not a defect.",
+        ]
+    )

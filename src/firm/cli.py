@@ -385,7 +385,9 @@ def _invoke_one_symbol(
                     langfuse_context.update_current_observation(output={"outcome": outcome})
                     _emit_cycle_done(symbol, correlation_id, final_state)
                 except Exception as exc:
-                    langfuse_context.update_current_observation(level="ERROR", status_message=str(exc))
+                    langfuse_context.update_current_observation(
+                        level="ERROR", status_message=str(exc)
+                    )
                     _emit(
                         {
                             "event": "cycle_error",

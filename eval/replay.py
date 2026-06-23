@@ -43,7 +43,6 @@ from pydantic import BaseModel
 from firm.adapters.fakes import FakeEvidenceStore, FakeReportSink
 from firm.adapters.llm_offline import build_offline_llm
 from firm.adapters.market_data_frozen import FrozenMarketData
-from firm.agents.execution import ExecutionFailure, Fill
 from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
 from firm.agents.research import Evidence, Refusal
 from firm.config.settings import RiskPolicyConfig, load_risk_policy
@@ -285,9 +284,7 @@ def _load_corpus(corpus_path: Path) -> list[NewsDoc]:
                 symbol=item["symbol"],
                 text=item["text"],
                 source_url=item["source_url"],
-                published_at=datetime.fromisoformat(
-                    item["published_at"].replace("Z", "+00:00")
-                ),
+                published_at=datetime.fromisoformat(item["published_at"].replace("Z", "+00:00")),
             )
         )
     return docs
@@ -398,9 +395,7 @@ def _state_to_record(
     trade_proposal = _deserialise_proposal(trade_proposal_raw) if trade_proposal_raw else None
 
     refusal = isinstance(evidence, Refusal)
-    injection_detected = (
-        isinstance(evidence, Refusal) and evidence.reason == "injection_detected"
-    )
+    injection_detected = isinstance(evidence, Refusal) and evidence.reason == "injection_detected"
 
     evidence_chunks, citations_used, has_citation = _extract_evidence_metrics(evidence)
     trade_proposed = isinstance(trade_proposal, TradeProposal)
@@ -784,10 +779,7 @@ def main() -> None:
     benchmark = window_config.get("benchmark", "SPY")
     days = _parse_window_dates(window_config)
     benchmark_bars = [
-        b
-        for day in days
-        for b in [market_data.get_bar(benchmark, day)]
-        if b is not None
+        b for day in days for b in [market_data.get_bar(benchmark, day)] if b is not None
     ]
 
     metrics = compute_metrics(result, benchmark_bars)

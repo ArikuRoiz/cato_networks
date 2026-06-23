@@ -149,18 +149,28 @@ class AnthropicLLM(LLM):
     ) -> LLMResponse | LLMError:
         resolved = _resolve_model(model)
         system, api_messages = _to_api_messages(messages)
-        api_tools = [{"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in tools]
+        api_tools = [
+            {"name": t.name, "description": t.description, "input_schema": t.input_schema}
+            for t in tools
+        ]
         total_input = total_output = 0
 
         for _ in range(max_rounds):
             try:
                 if system:
                     response = self._client.messages.create(
-                        model=resolved, max_tokens=max_tokens, messages=api_messages, tools=api_tools, system=system  # type: ignore[arg-type]
+                        model=resolved,
+                        max_tokens=max_tokens,
+                        messages=api_messages,
+                        tools=api_tools,  # type: ignore[arg-type]
+                        system=system,
                     )
                 else:
                     response = self._client.messages.create(
-                        model=resolved, max_tokens=max_tokens, messages=api_messages, tools=api_tools  # type: ignore[arg-type]
+                        model=resolved,
+                        max_tokens=max_tokens,
+                        messages=api_messages,
+                        tools=api_tools,  # type: ignore[arg-type]
                     )
             except anthropic.APIStatusError as exc:
                 return LLMError(message=str(exc), retryable=exc.status_code in {429, 500, 502, 503})
@@ -173,11 +183,20 @@ class AnthropicLLM(LLM):
             if response.stop_reason == "end_turn":
                 for block in response.content:
                     if isinstance(block, TextBlock):
-                        return LLMResponse(content=block.text, input_tokens=total_input, output_tokens=total_output, model=resolved)
-                return LLMError(message="No text block in final tool-loop response", retryable=False)
+                        return LLMResponse(
+                            content=block.text,
+                            input_tokens=total_input,
+                            output_tokens=total_output,
+                            model=resolved,
+                        )
+                return LLMError(
+                    message="No text block in final tool-loop response", retryable=False
+                )
 
             if response.stop_reason != "tool_use":
-                return LLMError(message=f"Unexpected stop_reason: {response.stop_reason}", retryable=False)
+                return LLMError(
+                    message=f"Unexpected stop_reason: {response.stop_reason}", retryable=False
+                )
 
             tool_results = []
             for block in response.content:
@@ -189,11 +208,19 @@ class AnthropicLLM(LLM):
                         try:
                             result = executor(dict(block.input))
                         except Exception:
-                            logger.exception("Tool execution failed: %s(%r)", block.name, block.input)
+                            logger.exception(
+                                "Tool execution failed: %s(%r)", block.name, block.input
+                            )
                             result = f"Error executing {block.name}"
-                    tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+                    tool_results.append(
+                        {"type": "tool_result", "tool_use_id": block.id, "content": result}
+                    )
 
-            api_messages = [*api_messages, {"role": "assistant", "content": response.content}, {"role": "user", "content": tool_results}]  # type: ignore[typeddict-item]
+            api_messages = [
+                *api_messages,
+                {"role": "assistant", "content": response.content},
+                {"role": "user", "content": tool_results},  # type: ignore[typeddict-item]
+            ]
 
         return LLMError(message=f"Tool loop exceeded max_rounds={max_rounds}", retryable=False)
 

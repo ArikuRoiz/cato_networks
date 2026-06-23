@@ -32,7 +32,7 @@ from uuid import UUID
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
-from firm.agents.debater import DebaterAgent, DebaterCase, DebaterFailure, DebaterInput
+from firm.agents.debater import DebaterAgent, DebaterFailure, DebaterInput
 from firm.agents.execution import ExecutionAgent, ExecutionInput
 from firm.agents.judge import JudgeAgent, JudgeFailure, JudgeInput
 from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
@@ -49,15 +49,15 @@ from firm.agents.synthesis import SynthesisInput, SynthesisReportAgent
 from firm.agents.technical import TechnicalAnalysisAgent, TechnicalInput
 from firm.config.settings import RiskPolicyConfig
 from firm.domain import Portfolio
-from firm.domain.enums import CycleOutcome, HITLStatus, Recommendation, RefusalReason
+from firm.domain.enums import CycleOutcome, HITLStatus, Recommendation, RefusalReason, TradeSide
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
-from firm.services.calendar import NYSECalendar
 from firm.orchestration.state import GraphState
 from firm.persistence.ledger import LedgerRepository
 from firm.ports.evidence import EvidenceStore
 from firm.ports.llm import LLM
 from firm.ports.market_data import MarketDataSource
 from firm.ports.report import ReportSink
+from firm.services.calendar import NYSECalendar
 from firm.tools.size_position import size_position, trade_side_from_recommendation
 from firm.utils import str_to_uuid
 
@@ -178,7 +178,7 @@ def make_pm_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
 
         proposal = TradeProposal(
             symbol=symbol,
-            side=side,
+            side=TradeSide(side),
             qty=qty,
             notional=qty * bar.close,
             rationale=f"research_manager={recommendation}@{conviction:.2f} nav={float(nav):.0f} price={float(bar.close):.2f}",
@@ -204,7 +204,10 @@ def make_risk_node(
     ) -> dict[str, Any]:
         proposal_raw = state.get("trade_proposal")
         if proposal_raw is None:
-            return {"cycle_outcome": CycleOutcome.ERROR, "error": "trade_proposal missing in risk_node"}
+            return {
+                "cycle_outcome": CycleOutcome.ERROR,
+                "error": "trade_proposal missing in risk_node",
+            }
 
         proposal = _deserialise_proposal(proposal_raw)
         portfolio = ports.portfolio
@@ -257,7 +260,10 @@ def _map_risk_result(risk_result: object, proposal_raw: dict[str, Any]) -> dict[
         return {"approved_trade": risk_result.model_dump(mode="json")}
     if isinstance(risk_result, Rejected):
         return {"cycle_outcome": CycleOutcome.REJECTED}
-    return {"cycle_outcome": CycleOutcome.ERROR, "error": f"unexpected risk result: {risk_result!r}"}
+    return {
+        "cycle_outcome": CycleOutcome.ERROR,
+        "error": f"unexpected risk result: {risk_result!r}",
+    }
 
 
 def _record_hitl_decision(
@@ -371,12 +377,18 @@ def make_execution_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
 
         approved_raw = state.get("approved_trade")
         if approved_raw is None:
-            return {"cycle_outcome": CycleOutcome.ERROR, "error": "approved_trade missing in execution_node"}
+            return {
+                "cycle_outcome": CycleOutcome.ERROR,
+                "error": "approved_trade missing in execution_node",
+            }
 
         correlation_id = state.get("correlation_id", "")
         approved = _deserialise_approved_trade(approved_raw)
         if approved is None:
-            return {"cycle_outcome": CycleOutcome.ERROR, "error": "approved_trade could not be deserialised"}
+            return {
+                "cycle_outcome": CycleOutcome.ERROR,
+                "error": "approved_trade could not be deserialised",
+            }
 
         trade = approved.trade
         prices = {trade.symbol: trade.requested_price}
@@ -653,7 +665,12 @@ def make_judge_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
         )
         result = agent.run(inp)
         if isinstance(result, JudgeFailure):
-            return {"verdict": {"failure_reason": result.failure_reason, "correlation_id": correlation_id}}
+            return {
+                "verdict": {
+                    "failure_reason": result.failure_reason,
+                    "correlation_id": correlation_id,
+                }
+            }
         return {"verdict": result.model_dump(mode="json")}
 
     return judge_node
@@ -674,7 +691,6 @@ def _parse_datetime(value: str) -> datetime:
         return datetime.fromisoformat(value)
     except ValueError:
         return datetime.now(tz=UTC)
-
 
 
 def _evidence_text(evidence: dict[str, Any] | None) -> str:

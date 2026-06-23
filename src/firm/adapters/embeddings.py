@@ -32,7 +32,7 @@ class SentenceTransformerEmbedder:
 
     def __init__(self, model_name: str = _MODEL_NAME) -> None:
         self._model_name = model_name
-        self._model = None  # type: ignore[assignment]
+        self._model: object = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -52,18 +52,21 @@ class SentenceTransformerEmbedder:
         list[float]
             A 384-dimensional float vector (for the default model).
         """
+        from sentence_transformers import SentenceTransformer
+
         model = self._load_model()
+        assert isinstance(model, SentenceTransformer)
         vector = model.encode(text, normalize_embeddings=True)
-        return vector.tolist()
+        return list(vector.tolist())
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
-    def _load_model(self):  # type: ignore[return]
+    def _load_model(self) -> object:
         """Lazy-initialise and return the underlying SentenceTransformer."""
         if self._model is None:
-            from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
+            from sentence_transformers import SentenceTransformer
 
             self._model = SentenceTransformer(self._model_name)
         return self._model

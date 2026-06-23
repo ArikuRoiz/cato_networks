@@ -400,5 +400,3 @@ def test_token_budget_unknown_id_is_zero() -> None:
     """get_total for an unseen correlation_id returns 0."""
     breaker = TokenBudgetCircuitBreaker()
     assert breaker.get_total("never-seen") == 0
-
-

@@ -50,11 +50,7 @@ def size_position(
     if conviction <= 0.0:
         return Decimal("0")
 
-    target_notional = (
-        Decimal(str(conviction))
-        * Decimal(str(max_trade_notional_pct))
-        * nav
-    )
+    target_notional = Decimal(str(conviction)) * Decimal(str(max_trade_notional_pct)) * nav
     raw_qty = target_notional / price
     floored = Decimal(str(math.floor(float(raw_qty))))
     return max(Decimal("0"), floored)

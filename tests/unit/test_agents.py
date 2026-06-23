@@ -12,11 +12,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from firm.adapters.fakes import FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
+from firm.adapters.fakes import FakeEvidenceStore, FakeLLM, FakeReportSink
 from firm.agents.execution import ExecutionAgent, ExecutionFailure, ExecutionInput, Fill
 from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
 from firm.agents.reporting import ReportFailure, ReportingAgent, ReportingInput, ReportSent
-from firm.agents.research import Claim, Evidence, Refusal, ResearchAgent, ResearchInput
+from firm.agents.research import Evidence, Refusal, ResearchAgent, ResearchInput
 from firm.agents.risk import ApprovedTrade, HITLRequired, Rejected, RiskAgent, RiskInput
 from firm.config.settings import RiskPolicyConfig
 from firm.domain import Bar, Portfolio, RiskPolicy, Trade, TradeStatus

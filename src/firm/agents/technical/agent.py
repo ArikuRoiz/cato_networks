@@ -63,11 +63,15 @@ class TechnicalAnalysisAgent(BaseAgent[TechnicalInput, TechnicalSignal | Technic
             start = inp.decision_ts - timedelta(days=lookback + 5)
             bars = self._market_data.get_bars(inp.symbol, start, inp.decision_ts)
             if len(bars) < 14:
-                return f"Insufficient price history for {inp.symbol}: only {len(bars)} bars available."
+                return (
+                    f"Insufficient price history for {inp.symbol}: only {len(bars)} bars available."
+                )
             ind = compute_indicators(bars)
             indicators_snapshot = ind
             last_close = float(bars[-1].close)
-            rsi_label = "overbought" if ind["rsi"] > 70 else "oversold" if ind["rsi"] < 30 else "neutral"
+            rsi_label = (
+                "overbought" if ind["rsi"] > 70 else "oversold" if ind["rsi"] < 30 else "neutral"
+            )
             macd_label = "bullish" if ind["histogram"] > 0 else "bearish"
             return (
                 f"Technical indicators for {inp.symbol} (close {last_close:.2f}):\n"
@@ -106,7 +110,9 @@ class TechnicalAnalysisAgent(BaseAgent[TechnicalInput, TechnicalSignal | Technic
         return _parse_signal(inp.symbol, resp.content, indicators_snapshot, last_close)
 
 
-def _parse_signal(symbol: str, content: str, ind: dict[str, float], close: float) -> TechnicalSignal | TechnicalUnavailable:
+def _parse_signal(
+    symbol: str, content: str, ind: dict[str, float], close: float
+) -> TechnicalSignal | TechnicalUnavailable:
     raw = parse_json_dict(content)
     if raw is None:
         return TechnicalUnavailable(symbol=symbol, reason="llm returned invalid JSON")
@@ -122,7 +128,9 @@ def _parse_signal(symbol: str, content: str, ind: dict[str, float], close: float
         symbol=symbol,
         headline=str(raw.get("headline", "Technical analysis unavailable"))[:120],
         body=str(raw.get("body", "")),
-        bias=TechnicalBias(raw["bias"]) if raw.get("bias") in {b.value for b in TechnicalBias} else TechnicalBias.NEUTRAL,
+        bias=TechnicalBias(raw["bias"])
+        if raw.get("bias") in {b.value for b in TechnicalBias}
+        else TechnicalBias.NEUTRAL,
         rsi=round(ind["rsi"], 2),
         macd=round(ind["macd"], 4),
         macd_cross=macd_cross,

@@ -40,7 +40,7 @@ try:
     from firm.adapters.embeddings import SentenceTransformerEmbedder as _SE
 
     _SE().embed("warmup")  # triggers lazy load; raises if weights missing
-except Exception as _exc:  # noqa: BLE001
+except Exception as _exc:
     _EMBEDDER_SKIP_REASON = f"sentence-transformers model unavailable: {_exc}"
 
 pytestmark = pytest.mark.skipif(

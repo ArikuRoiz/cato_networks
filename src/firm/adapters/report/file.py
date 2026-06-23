@@ -62,8 +62,14 @@ def _render_text(report: DailyReport) -> str:
     if report.positions:
         lines.append("POSITIONS")
         for p in report.positions:
-            pnl_str = f"+{p['unrealized_pnl']:.2f}" if p["unrealized_pnl"] >= 0 else f"{p['unrealized_pnl']:.2f}"
-            lines.append(f"  {p['symbol']:6s} {p['qty']:>8.2f} shares  cost ${p['avg_cost']:.2f}  upnl {pnl_str}")
+            pnl_str = (
+                f"+{p['unrealized_pnl']:.2f}"
+                if p["unrealized_pnl"] >= 0
+                else f"{p['unrealized_pnl']:.2f}"
+            )
+            lines.append(
+                f"  {p['symbol']:6s} {p['qty']:>8.2f} shares  cost ${p['avg_cost']:.2f}  upnl {pnl_str}"
+            )
         lines.append("")
     if report.citations:
         lines.append("EVIDENCE CITED")

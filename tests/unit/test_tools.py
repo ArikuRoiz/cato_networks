@@ -5,12 +5,11 @@ Covers size_position and check_risk.  No LLM, no DB, no network.
 
 from __future__ import annotations
 
-import uuid
 from decimal import Decimal
 
 import pytest
 
-from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
+from firm.agents.portfolio_manager.schemas import TradeProposal
 from firm.domain import Portfolio, RiskPolicy
 from firm.domain.decisions import Approved, HITLRequired, Rejected
 from firm.domain.enums import Recommendation
@@ -132,7 +131,7 @@ class TestSizePositionConviction:
         assert high >= low, "Higher conviction must not produce fewer shares"
 
     def test_full_conviction_respects_cap(self) -> None:
-        """Even at conviction=1.0, notional must not exceed max_trade_notional_pct × NAV."""
+        """Even at conviction=1.0, notional must not exceed max_trade_notional_pct x NAV."""
         qty = size_position(
             recommendation=Recommendation.BUY,
             conviction=1.0,
@@ -203,10 +202,10 @@ class TestSizePositionEdgeCases:
 
 
 class TestSizePositionFormula:
-    """Verify the sizing formula: target = conviction × max_pct × NAV, floored."""
+    """Verify the sizing formula: target = conviction x max_pct x NAV, floored."""
 
     @pytest.mark.parametrize(
-        "conviction, nav, price, max_pct, expected_qty",
+        ("conviction", "nav", "price", "max_pct", "expected_qty"),
         [
             # conviction=1.0, nav=100k, price=500, cap=10% → target=10k, qty=20
             (1.0, Decimal("100000"), Decimal("500"), 0.10, Decimal("20")),

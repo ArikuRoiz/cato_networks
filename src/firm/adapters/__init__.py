@@ -17,7 +17,6 @@ from firm.adapters.report import ExcelReportSink, FileReportSink, SlackReportSin
 __all__ = [
     "MODEL_MAP",
     "AnthropicLLM",
-    "SentenceTransformerEmbedder",
     "CassetteLLM",
     "CassetteNotFound",
     "ExcelReportSink",
@@ -29,6 +28,7 @@ __all__ = [
     "FrozenMarketData",
     "GracefulLLM",
     "PgvectorEvidenceStore",
+    "SentenceTransformerEmbedder",
     "SlackReportSink",
     "build_offline_llm",
 ]

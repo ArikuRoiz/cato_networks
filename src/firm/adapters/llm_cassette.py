@@ -201,10 +201,20 @@ class CassetteLLM(LLM):
         text response is stored in the cassette.  In replay mode the cassette
         serves the stored final response without running any tools.
         """
-        key_messages = [*messages, LLMMessage(role="user", content=f"__tools__:{','.join(t.name for t in tools)}")]
+        key_messages = [
+            *messages,
+            LLMMessage(role="user", content=f"__tools__:{','.join(t.name for t in tools)}"),
+        ]
         if self._mode == "record":
             inner = self._require_inner()
-            result = inner.complete_with_tools(messages, tools, executors, model=model, max_tokens=max_tokens, max_rounds=max_rounds)
+            result = inner.complete_with_tools(
+                messages,
+                tools,
+                executors,
+                model=model,
+                max_tokens=max_tokens,
+                max_rounds=max_rounds,
+            )
             if isinstance(result, LLMResponse):
                 key = _compute_key(model, key_messages)
                 _append_entry(self._cassette_path, key, result)

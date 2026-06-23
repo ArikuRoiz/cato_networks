@@ -332,9 +332,7 @@ def test_record_approval_writes_row_and_audit_entry(migrated_engine: Engine) -> 
     )
 
     with Session(migrated_engine) as session:
-        approval_rows = (
-            session.query(ApprovalRow).filter_by(trade_id=filled.id).all()
-        )
+        approval_rows = session.query(ApprovalRow).filter_by(trade_id=filled.id).all()
         assert len(approval_rows) == 1, (
             f"Expected 1 ApprovalRow for trade {filled.id}, got {len(approval_rows)}"
         )

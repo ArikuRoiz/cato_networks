@@ -94,5 +94,7 @@ def _parse(inp: ResearchManagerInput, content: str) -> ResearchPlan | ResearchMa
         )
     except (KeyError, ValueError) as exc:
         return ResearchManagerFailure(
-            symbol=inp.symbol, correlation_id=inp.correlation_id, failure_reason=f"parse_error: {exc}"
+            symbol=inp.symbol,
+            correlation_id=inp.correlation_id,
+            failure_reason=f"parse_error: {exc}",
         )
