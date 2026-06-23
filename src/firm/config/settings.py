@@ -212,7 +212,9 @@ def load_risk_policy_or_default(path: Path) -> RiskPolicyConfig:
         try:
             return load_risk_policy(path)
         except Exception:
-            logger.warning("Failed to load risk policy from %s; using defaults", path, exc_info=True)
+            logger.warning(
+                "Failed to load risk policy from %s; using defaults", path, exc_info=True
+            )
     return default_risk_policy()
 
 
