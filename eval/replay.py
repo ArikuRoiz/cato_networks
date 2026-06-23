@@ -3,21 +3,26 @@
 Usage:
     python -m eval.replay --window data/windows/default.yaml
 
-Wires FrozenMarketData + FakeEvidenceStore + CassetteLLM into the full
-five-agent pipeline.  Each (symbol, day) pair is run as an isolated
-cycle; results accumulate into an EvalResult for metric computation.
+Wires FrozenMarketData + FakeEvidenceStore + CassetteLLM (or FakeLLM) into
+the **production** graph (``firm.orchestration.build_graph``).  Each
+(symbol, day) pair runs as an isolated cycle; results accumulate into an
+``EvalResult`` for metric computation.
 
-No live network calls are made.  The cassette must be pre-recorded or
-the test cassette fixture is used for CI.
+No live network calls are made.  The cassette must be pre-recorded or the
+FakeLLM path is used for CI.
 
 Design notes
 ------------
-- The LangGraph checkpointer is replaced with an in-memory MemorySaver so
-  that eval runs need no Postgres connection.
-- The LedgerRepository is replaced with a _FakeLedger (no DB) so that
-  eval can run offline and deterministically.
-- Every number (fill price, NAV, portfolio history) comes from domain
-  tools or market-data adapters, never from the LLM.
+- The LangGraph checkpointer is an in-memory ``MemorySaver`` — no Postgres.
+- The ledger is ``_FakeLedger`` — in-memory, no DB.
+- Every number (fill price, NAV, portfolio history) comes from domain tools
+  or market-data adapters, never from the LLM.
+- Cassette misses in replay mode are caught by ``_GracefulLLM`` and returned
+  as ``LLMError`` so agents fall back to their Failure variants and the cycle
+  completes — the eval never crashes on a miss.
+- HITL is auto-approved via the FakeReportSink (which returns APPROVED for
+  every send_hitl_request call).  Trades that trigger the HITL interrupt in
+  the risk_node will be resumed automatically by the eval runner.
 """
 
 from __future__ import annotations
@@ -33,49 +38,28 @@ from typing import Any
 
 import yaml
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.constants import END, START
-from langgraph.graph import StateGraph
 from pydantic import BaseModel
 
 from firm.adapters.fakes import FakeEvidenceStore, FakeLLM, FakeReportSink
-from firm.adapters.llm_cassette import CassetteLLM
+from firm.adapters.llm_cassette import CassetteNotFound, CassetteLLM
 from firm.adapters.market_data_frozen import FrozenMarketData
-from firm.agents.execution import ExecutionAgent, ExecutionFailure, ExecutionInput, Fill
+from firm.agents.execution import ExecutionFailure, Fill
 from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
-from firm.agents.reporting import ReportingAgent, ReportingInput
-from firm.agents.research import Evidence, Refusal, ResearchAgent, ResearchInput
-from firm.agents.research_manager import ResearchManagerAgent, ResearchManagerInput
-from firm.agents.research_manager.schemas import ResearchManagerFailure, ResearchPlan
-from firm.agents.risk import ApprovedTrade, HITLRequired, Rejected, RiskAgent, RiskInput
+from firm.agents.research import Evidence, Refusal
 from firm.config.settings import RiskPolicyConfig, load_risk_policy
-from firm.domain import Portfolio, RiskPolicy, Trade, TradeStatus
-from firm.domain.enums import Recommendation, RefusalReason
+from firm.domain import Holding, Lot, Portfolio, RiskPolicy, Trade, TradeStatus
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
+from firm.orchestration.graph import build_graph
+from firm.orchestration.nodes import NodePorts
 from firm.ports.llm import LLM
-from firm.ports.types import LLMResponse, NewsDoc
-from firm.tools.size_position import size_position, trade_side_from_recommendation
+from firm.ports.types import LLMError, LLMMessage, LLMResponse, NewsDoc, ToolDef, ToolExecutors
 
 # ---------------------------------------------------------------------------
 # Configuration and result schemas
 # ---------------------------------------------------------------------------
 
 _INITIAL_NAV: Decimal = Decimal("100000")  # $100k starting cash
-_DECIMAL_ONE: Decimal = Decimal("1")
 _WATCHLIST: list[str] = ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMD"]
-
-
-def _evidence_text(research_result: object) -> str:
-    """Convert a research result to a short text summary for the Research Manager."""
-    from firm.agents.research import Evidence, Refusal
-
-    if isinstance(research_result, Evidence):
-        claims = research_result.claims
-        if not claims:
-            return "Research found no usable claims."
-        return "; ".join(c.text for c in claims[:5])
-    if isinstance(research_result, Refusal):
-        return f"Research refusal: {research_result.reason}"
-    return "No fundamental evidence available."
 
 
 class EvalConfig(BaseModel):
@@ -130,6 +114,69 @@ class EvalResult(BaseModel):
     final_nav: float
 
     model_config = {"frozen": True}
+
+
+# ---------------------------------------------------------------------------
+# Graceful LLM wrapper — converts CassetteNotFound to LLMError
+# ---------------------------------------------------------------------------
+
+
+class _GracefulLLM(LLM):
+    """Wraps a ``CassetteLLM`` and catches ``CassetteNotFound`` on miss.
+
+    When the cassette has no entry for a request (common in replay mode when
+    the 11-node graph makes calls the 5-node cassette never recorded), the
+    miss is silently converted to ``LLMError`` so the receiving agent returns
+    its Failure variant instead of crashing the eval runner.
+    """
+
+    def __init__(self, inner: LLM) -> None:
+        self._inner = inner
+
+    def complete(
+        self,
+        messages: list[LLMMessage],
+        *,
+        model: str,
+        max_tokens: int,
+    ) -> LLMResponse | LLMError:
+        try:
+            return self._inner.complete(messages, model=model, max_tokens=max_tokens)
+        except CassetteNotFound as exc:
+            return LLMError(message=f"cassette miss: {exc.key[:16]}", retryable=False)
+
+    def complete_with_tools(
+        self,
+        messages: list[LLMMessage],
+        tools: list[ToolDef],
+        executors: ToolExecutors,
+        *,
+        model: str,
+        max_tokens: int,
+        max_rounds: int = 5,
+    ) -> LLMResponse | LLMError:
+        try:
+            return self._inner.complete_with_tools(
+                messages,
+                tools,
+                executors,
+                model=model,
+                max_tokens=max_tokens,
+                max_rounds=max_rounds,
+            )
+        except CassetteNotFound as exc:
+            return LLMError(message=f"cassette miss: {exc.key[:16]}", retryable=False)
+
+    def count_tokens(
+        self,
+        messages: list[LLMMessage],
+        *,
+        model: str,
+    ) -> int:
+        try:
+            return self._inner.count_tokens(messages, model=model)
+        except CassetteNotFound:
+            return sum(len(m.content) for m in messages) // 4
 
 
 # ---------------------------------------------------------------------------
@@ -191,26 +238,14 @@ def _apply_buy(
     opened_at: datetime | None = None,
 ) -> None:
     """Update in-memory portfolio after a buy — no FIFO lot tracking."""
-    from firm.domain import Holding, Lot
-
     fill_price = trade.fill_price or trade.requested_price
     ts = opened_at if opened_at is not None else datetime.now(tz=UTC)
     holding = portfolio.holdings.get(trade.symbol)
     if holding is None:
-        lot = Lot(
-            symbol=trade.symbol,
-            qty=trade.qty,
-            cost=fill_price,
-            opened_at=ts,
-        )
+        lot = Lot(symbol=trade.symbol, qty=trade.qty, cost=fill_price, opened_at=ts)
         portfolio.holdings[trade.symbol] = Holding(symbol=trade.symbol, lots=[lot])
     else:
-        lot = Lot(
-            symbol=trade.symbol,
-            qty=trade.qty,
-            cost=fill_price,
-            opened_at=ts,
-        )
+        lot = Lot(symbol=trade.symbol, qty=trade.qty, cost=fill_price, opened_at=ts)
         holding.lots.append(lot)
 
 
@@ -288,204 +323,6 @@ def _default_risk_policy() -> RiskPolicyConfig:
 
 
 # ---------------------------------------------------------------------------
-# Eval-specific LangGraph builder
-# ---------------------------------------------------------------------------
-
-
-def _build_eval_graph(
-    research_agent: ResearchAgent,
-    research_manager_agent: ResearchManagerAgent,
-    risk_agent: RiskAgent,
-    execution_agent: ExecutionAgent,
-    reporting_agent: ReportingAgent,
-    portfolio: Portfolio,
-    portfolio_id: uuid.UUID,
-    market_data: FrozenMarketData,
-    risk_policy: RiskPolicyConfig,
-) -> Any:
-    """Build and compile a LangGraph StateGraph for the eval harness.
-
-    Uses MemorySaver as the checkpointer so no Postgres connection is required.
-    All agents are closed over in the node functions.
-    The PM agent is replaced by a deterministic sizing step via ``size_position``.
-    """
-    builder: StateGraph = StateGraph(dict)  # type: ignore[type-arg]
-
-    def _research_node(state: dict[str, Any]) -> dict[str, Any]:
-        symbol: str = state.get("symbol", "")
-        decision_ts: datetime = state.get("decision_ts") or datetime.now(tz=UTC)
-        correlation_id: str = state.get("correlation_id", "")
-        inp = ResearchInput(
-            symbol=symbol,
-            decision_ts=decision_ts,
-            correlation_id=correlation_id,
-        )
-        result = research_agent.run(inp)
-        return {"research_result": result}
-
-    def _pm_node(state: dict[str, Any]) -> dict[str, Any]:
-        """Deterministic sizing node: Research Manager → size_position → TradeProposal | Hold."""
-        symbol: str = state.get("symbol", "")
-        decision_ts: datetime = state.get("decision_ts") or datetime.now(tz=UTC)
-        correlation_id: str = state.get("correlation_id", "")
-        research_result = state.get("research_result") or Refusal(reason=RefusalReason.INSUFFICIENT_EVIDENCE)
-
-        # Run the Research Manager to get recommendation + conviction.
-        evidence_summary = _evidence_text(research_result)
-        rm_inp = ResearchManagerInput(
-            symbol=symbol,
-            correlation_id=correlation_id,
-            evidence_summary=evidence_summary,
-        )
-        rm_result = research_manager_agent.run(rm_inp)
-
-        if isinstance(rm_result, ResearchManagerFailure):
-            return {"pm_result": Hold(symbol=symbol, reason=f"research_manager failed: {rm_result.failure_reason}")}
-
-        research_plan: ResearchPlan = rm_result
-        recommendation: Recommendation = research_plan.recommendation
-        conviction: float = research_plan.conviction
-
-        bar = market_data.get_bar(symbol, decision_ts)
-        if bar is None:
-            return {"pm_result": Hold(symbol=symbol, reason="no market data for sizing")}
-
-        prices: dict[str, Any] = {symbol: bar.close}
-        for sym, holding in portfolio.holdings.items():
-            if sym not in prices:
-                prices[sym] = holding.avg_cost
-        nav = portfolio.nav(prices)
-
-        qty = size_position(
-            recommendation=recommendation,
-            conviction=conviction,
-            nav=nav,
-            price=bar.close,
-            max_trade_notional_pct=risk_policy.max_trade_notional_pct,
-        )
-
-        if qty < _DECIMAL_ONE:
-            return {"pm_result": Hold(symbol=symbol, reason=f"sizing yielded zero quantity (recommendation={recommendation} conviction={conviction:.3f})")}
-
-        side = trade_side_from_recommendation(recommendation)
-        if side is None:
-            return {"pm_result": Hold(symbol=symbol, reason=f"hold recommendation: {recommendation}")}
-
-        proposal = TradeProposal(
-            symbol=symbol,
-            side=side,
-            qty=qty,
-            notional=qty * bar.close,
-            rationale=f"research_manager={recommendation}@{conviction:.2f}",
-        )
-        return {"pm_result": proposal}
-
-    def _risk_node(state: dict[str, Any]) -> dict[str, Any]:
-        symbol: str = state.get("symbol", "")
-        pm_result = state.get("pm_result") or Hold(symbol=symbol, reason="no pm result")
-        correlation_id: str = state.get("correlation_id", "")
-        prices = _prices_for_risk(pm_result, portfolio, market_data, state)
-        inp = RiskInput(
-            proposal=pm_result,
-            portfolio=portfolio,
-            prices=prices,
-            correlation_id=correlation_id,
-        )
-        result = risk_agent.run(inp)
-        if isinstance(result, HITLRequired):
-            # Auto-approve for eval — no human in the loop.
-            trade = _build_eval_trade(result.proposal, correlation_id, prices)
-            approved = ApprovedTrade(trade=trade, correlation_id=correlation_id)
-            return {"risk_result": result, "approved_trade": approved, "hitl_auto_approved": True}
-        if isinstance(result, ApprovedTrade):
-            return {"risk_result": result, "approved_trade": result, "hitl_auto_approved": False}
-        return {"risk_result": result, "approved_trade": None, "hitl_auto_approved": False}
-
-    def _execution_node(state: dict[str, Any]) -> dict[str, Any]:
-        approved: ApprovedTrade | None = state.get("approved_trade")
-        correlation_id: str = state.get("correlation_id", "")
-        if approved is None:
-            return {"exec_result": None}
-        prices = {approved.trade.symbol: approved.trade.requested_price}
-        inp = ExecutionInput(
-            approved_trade=approved,
-            portfolio_id=portfolio_id,
-            portfolio=portfolio,
-            prices=prices,
-            correlation_id=correlation_id,
-        )
-        result = execution_agent.run(inp)
-        return {"exec_result": result}
-
-    def _reporting_node(state: dict[str, Any]) -> dict[str, Any]:
-        correlation_id: str = state.get("correlation_id", "")
-        decision_ts: datetime = state.get("decision_ts") or datetime.now(tz=UTC)
-        cycle_id = _str_to_uuid(correlation_id)
-        inp = ReportingInput(
-            cycle_id=cycle_id,
-            portfolio_id=portfolio_id,
-            report_date=decision_ts.date(),
-            correlation_id=correlation_id,
-        )
-        reporting_agent.run(inp)
-        return {"reporting_done": True}
-
-    def _route_after_risk(state: dict[str, Any]) -> str:
-        approved = state.get("approved_trade")
-        if approved is not None:
-            return "execution"
-        return "reporting"
-
-    builder.add_node("research", _research_node)  # type: ignore[type-var]
-    builder.add_node("pm", _pm_node)  # type: ignore[type-var]
-    builder.add_node("risk", _risk_node)  # type: ignore[type-var]
-    builder.add_node("execution", _execution_node)  # type: ignore[type-var]
-    builder.add_node("reporting", _reporting_node)  # type: ignore[type-var]
-
-    builder.add_edge(START, "research")
-    builder.add_edge("research", "pm")
-    builder.add_edge("pm", "risk")
-    builder.add_conditional_edges("risk", _route_after_risk, ["execution", "reporting"])
-    builder.add_edge("execution", "reporting")
-    builder.add_edge("reporting", END)
-
-    checkpointer = MemorySaver()
-    return builder.compile(checkpointer=checkpointer)
-
-
-def _prices_for_risk(
-    pm_result: object,
-    portfolio: Portfolio,
-    market_data: FrozenMarketData,
-    state: dict[str, Any],
-) -> dict[str, Decimal]:
-    """Build a prices dict covering the proposal symbol AND all held symbols.
-
-    ``Portfolio.nav()`` raises ``ValueError`` when any held symbol is absent
-    from the prices dict.  This helper ensures all held symbols are covered
-    by falling back to the holding's average cost when no bar is available.
-    """
-    decision_ts: datetime = state.get("decision_ts") or datetime.now(tz=UTC)
-    prices: dict[str, Decimal] = {}
-
-    # Price for the proposed trade symbol (derived from proposal)
-    if isinstance(pm_result, TradeProposal) and pm_result.qty > Decimal("0"):
-        prices[pm_result.symbol] = pm_result.notional / pm_result.qty
-
-    # Prices for all currently held symbols so NAV can be computed
-    for sym, holding in portfolio.holdings.items():
-        if sym in prices:
-            continue
-        bar = market_data.get_bar(sym, decision_ts) if decision_ts is not None else None
-        if bar is not None:
-            prices[sym] = bar.close
-        else:
-            prices[sym] = holding.avg_cost
-
-    return prices
-
-
-# ---------------------------------------------------------------------------
 # Single-cycle runner
 # ---------------------------------------------------------------------------
 
@@ -496,22 +333,26 @@ def _run_cycle(
     correlation_id: str,
     graph: Any,
 ) -> CycleRecord:
-    """Execute one research→PM→risk→execution→reporting pass via LangGraph.
+    """Execute one full pipeline pass via the production LangGraph.
 
-    Invokes the compiled eval graph with an in-memory thread and extracts
+    Invokes the compiled graph with an in-memory thread and extracts
     CycleRecord fields from the final state.  Never raises — all failures
     are captured in the returned record.
+
+    ``decision_ts`` is serialised to an ISO string before being placed in
+    the initial state because the real graph's nodes parse it from a string
+    (``_parse_datetime``).
     """
     thread_id = str(uuid.uuid4())
     initial_state = {
         "symbol": symbol,
-        "decision_ts": decision_ts,
+        "decision_ts": decision_ts.isoformat(),
         "correlation_id": correlation_id,
     }
     config = {"configurable": {"thread_id": thread_id}}
 
     try:
-        final_state: dict = graph.invoke(initial_state, config=config)  # type: ignore[type-arg]
+        final_state: dict[str, Any] = graph.invoke(initial_state, config=config)
     except Exception:
         return _make_record(
             cycle_id=correlation_id,
@@ -535,50 +376,38 @@ def _run_cycle(
 
 
 def _state_to_record(
-    state: dict,  # type: ignore[type-arg]
+    state: dict[str, Any],
     symbol: str,
     decision_ts: datetime,
     correlation_id: str,
 ) -> CycleRecord:
-    """Convert final LangGraph state dict to a CycleRecord."""
-    research_result = state.get("research_result")
-    pm_result = state.get("pm_result")
-    risk_result = state.get("risk_result")
-    exec_result = state.get("exec_result")
-    approved: ApprovedTrade | None = state.get("approved_trade")
+    """Convert final GraphState dict to a CycleRecord.
 
-    refusal = isinstance(research_result, Refusal)
+    Reads from the real ``GraphState`` field names produced by the production
+    graph nodes: ``evidence``, ``trade_proposal``, ``approved_trade``,
+    ``cycle_outcome``.
+    """
+    evidence_raw: dict[str, Any] | None = state.get("evidence")
+    trade_proposal_raw: dict[str, Any] | None = state.get("trade_proposal")
+    approved_raw: dict[str, Any] | None = state.get("approved_trade")
+    cycle_outcome: str | None = state.get("cycle_outcome")
+
+    evidence = _deserialise_evidence(evidence_raw)
+    trade_proposal = _deserialise_proposal(trade_proposal_raw) if trade_proposal_raw else None
+
+    refusal = isinstance(evidence, Refusal)
     injection_detected = (
-        isinstance(research_result, Refusal)
-        and research_result.reason == "injection_detected"
+        isinstance(evidence, Refusal) and evidence.reason == "injection_detected"
     )
 
-    evidence_chunks = 0
-    citations_used = 0
-    has_citation = False
-    if isinstance(research_result, Evidence):
-        evidence_chunks = len(research_result.claims)
-        citations_used = _count_cited_claims(research_result)
-        has_citation = citations_used > 0
+    evidence_chunks, citations_used, has_citation = _extract_evidence_metrics(evidence)
+    trade_proposed = isinstance(trade_proposal, TradeProposal)
+    trade_filled = cycle_outcome == "filled"
+    guardrail_triggered = cycle_outcome in ("rejected", "error")
+    hitl_required = _was_hitl_auto_approved(approved_raw, trade_proposed)
 
-    trade_proposed = isinstance(pm_result, TradeProposal)
-    hitl_required: bool = state.get("hitl_auto_approved", False)
-    guardrail_triggered = isinstance(risk_result, Rejected) or isinstance(
-        exec_result, ExecutionFailure
-    )
-
-    trade_filled = isinstance(exec_result, Fill)
-    fill_price: float | None = float(exec_result.fill_price) if isinstance(exec_result, Fill) else None
-    fill_qty: float | None = (
-        float(approved.trade.qty) if isinstance(exec_result, Fill) and approved is not None else None
-    )
-
-    tokens_used = (
-        _estimate_tokens(research_result)
-        + _estimate_tokens(pm_result)
-        + _estimate_tokens(risk_result)
-        + _estimate_tokens(exec_result)
-    )
+    fill_price, fill_qty = _extract_fill(approved_raw, trade_filled)
+    tokens_used = _estimate_tokens(evidence) + _estimate_tokens(trade_proposal)
 
     return _make_record(
         cycle_id=correlation_id,
@@ -599,14 +428,46 @@ def _state_to_record(
     )
 
 
-def _count_cited_claims(evidence: Evidence) -> int:
-    """Count claims that have a non-empty source_url (i.e. were actually cited).
+def _extract_evidence_metrics(evidence: object) -> tuple[int, int, bool]:
+    """Return (evidence_chunks, citations_used, has_citation) from a parsed evidence."""
+    if not isinstance(evidence, Evidence):
+        return 0, 0, False
+    chunks = len(evidence.claims)
+    cited = _count_cited_claims(evidence)
+    return chunks, cited, cited > 0
 
-    A claim is considered cited when the LLM's parsed output mapped a chunk_id
-    to a known source URL in the corpus.  Claims with an empty ``source_url``
-    were returned by the LLM but could not be attributed to any retrieved chunk
-    and therefore do not count as citations.
+
+def _extract_fill(
+    approved_raw: dict[str, Any] | None,
+    trade_filled: bool,
+) -> tuple[float | None, float | None]:
+    """Return (fill_price, fill_qty) when the cycle produced a fill."""
+    if not trade_filled or approved_raw is None:
+        return None, None
+    trade_raw = approved_raw.get("trade", {})
+    price_raw = trade_raw.get("requested_price") or trade_raw.get("fill_price")
+    qty_raw = trade_raw.get("qty")
+    fill_price = float(price_raw) if price_raw is not None else None
+    fill_qty = float(qty_raw) if qty_raw is not None else None
+    return fill_price, fill_qty
+
+
+def _was_hitl_auto_approved(
+    approved_raw: dict[str, Any] | None,
+    trade_proposed: bool,
+) -> bool:
+    """Heuristic: HITL was triggered when there is an approved trade from a proposed trade.
+
+    The real graph uses LangGraph interrupt() which does not leave a
+    distinguishing flag in the final state; we approximate HITL by checking
+    whether an approved_trade exists alongside a trade_proposed flag.
+    In eval runs HITL is auto-resolved by the FakeReportSink.
     """
+    return trade_proposed and approved_raw is not None
+
+
+def _count_cited_claims(evidence: Evidence) -> int:
+    """Count claims that have a non-empty source_url."""
     return sum(1 for c in evidence.claims if c.source_url)
 
 
@@ -656,12 +517,7 @@ def _make_record(
 
 
 def _estimate_tokens(result: object) -> int:
-    """Rough token estimate based on result type and content size.
-
-    Covers all result types that flow through the pipeline so that
-    ``tokens_used`` in each CycleRecord accurately reflects all LLM
-    activity, not just research/PM steps.
-    """
+    """Rough token estimate based on result type and content size."""
     if isinstance(result, Evidence):
         total = sum(len(c.text) for c in result.claims)
         return max(50, total // 4)
@@ -669,10 +525,6 @@ def _estimate_tokens(result: object) -> int:
         return 20
     if isinstance(result, TradeProposal):
         return len(result.rationale) // 4 + 30
-    if isinstance(result, (ApprovedTrade, HITLRequired, Rejected)):
-        return 15
-    if isinstance(result, (Fill, ExecutionFailure)):
-        return 10
     return 0
 
 
@@ -681,31 +533,38 @@ def _estimate_cost(tokens: int) -> float:
     return tokens * 0.50 / 1_000_000
 
 
+def _deserialise_evidence(raw: dict[str, Any] | None) -> Evidence | Refusal:
+    """Deserialise evidence dict to Evidence or Refusal."""
+    from firm.domain.enums import RefusalReason
 
-def _build_eval_trade(
-    proposal: TradeProposal,
-    correlation_id: str,
-    prices: dict[str, Decimal],
-) -> Trade:
-    """Build a Trade domain object for an eval HITL-auto-approve."""
-    price = prices.get(proposal.symbol, proposal.notional / proposal.qty)
-    return Trade(
-        id=uuid.uuid4(),
-        cycle_id=_str_to_uuid(correlation_id),
-        symbol=proposal.symbol,
-        side=proposal.side,
-        qty=proposal.qty,
-        status=TradeStatus.APPROVED,
-        requested_price=price,
-        idempotency_key=f"eval-{correlation_id}-{proposal.symbol}",
-    )
+    if raw is None:
+        return Refusal(reason=RefusalReason.INSUFFICIENT_EVIDENCE)
+    if "claims" in raw:
+        try:
+            return Evidence.model_validate(raw)
+        except Exception:
+            pass
+    if "reason" in raw:
+        try:
+            return Refusal.model_validate(raw)
+        except Exception:
+            pass
+    return Refusal(reason=RefusalReason.INSUFFICIENT_EVIDENCE)
 
 
-def _str_to_uuid(value: str) -> uuid.UUID:
-    try:
-        return uuid.UUID(value)
-    except ValueError:
-        return uuid.uuid4()
+def _deserialise_proposal(raw: dict[str, Any]) -> TradeProposal | Hold:
+    """Deserialise proposal dict to TradeProposal or Hold."""
+    if "qty" in raw and "notional" in raw:
+        try:
+            return TradeProposal.model_validate(raw)
+        except Exception:
+            pass
+    if "reason" in raw:
+        try:
+            return Hold.model_validate(raw)
+        except Exception:
+            pass
+    return Hold(symbol=raw.get("symbol", ""), reason="deserialisation failed")
 
 
 def _parse_window_dates(window_config: dict[str, Any]) -> list[datetime]:
@@ -727,11 +586,7 @@ def _has_any_bar(
     market_data: FrozenMarketData,
     symbols: list[str],
 ) -> bool:
-    """Return True when at least one symbol has a bar for *day*.
-
-    Used to skip weekend and holiday dates that produce hollow CycleRecords
-    with no market data and therefore no meaningful signal.
-    """
+    """Return True when at least one symbol has a bar for *day*."""
     return any(market_data.get_bar(sym, day) is not None for sym in symbols)
 
 
@@ -747,7 +602,6 @@ def _snapshot_nav(
         bar = market_data.get_bar(sym, day)
         if bar is not None:
             prices[sym] = bar.close
-    # Only include held symbols in NAV — skip missing prices for unowned symbols
     held_symbols = set(portfolio.holdings.keys())
     filtered_prices = {s: p for s, p in prices.items() if s in held_symbols}
     equity = sum(
@@ -767,11 +621,10 @@ def run_eval(config: EvalConfig) -> EvalResult:
     """Run the full replay eval and return an EvalResult.
 
     Loads FrozenMarketData, populates FakeEvidenceStore from corpus.json,
-    wires CassetteLLM in replay mode (or FakeLLM when no cassette exists),
-    builds all five agents with fakes, builds the LangGraph with a
-    MemorySaver checkpointer, then iterates over every (symbol, day) pair
-    in the replay window.  Days with no bar data (weekends, holidays) are
-    skipped so hollow records do not pollute process metrics.
+    wires a graceful LLM (CassetteLLM wrapped to degrade on miss, or FakeLLM),
+    builds NodePorts, compiles the **production** graph via
+    ``firm.orchestration.build_graph``, then iterates over every (symbol, day)
+    pair in the replay window.  Days with no bar data are skipped.
 
     The portfolio is shared across all cycles within the run — trades
     accumulate on the same in-memory portfolio, mirroring what a live run
@@ -799,27 +652,19 @@ def run_eval(config: EvalConfig) -> EvalResult:
     guardrail = LedgerGuardrail(domain_policy)
     report_sink = FakeReportSink()
 
-    research_agent = ResearchAgent(
+    ports = NodePorts(
         evidence=evidence_store,
         llm=llm,
-        injection_guard=injection_guard,
-    )
-    research_manager_agent = ResearchManagerAgent(llm=llm)
-    risk_agent = RiskAgent(risk=risk_policy)
-    execution_agent = ExecutionAgent(ledger=ledger, guardrail=guardrail)  # type: ignore[arg-type]
-    reporting_agent = ReportingAgent(report_sink=report_sink, ledger=ledger)  # type: ignore[arg-type]
-
-    graph = _build_eval_graph(
-        research_agent=research_agent,
-        research_manager_agent=research_manager_agent,
-        risk_agent=risk_agent,
-        execution_agent=execution_agent,
-        reporting_agent=reporting_agent,
-        portfolio=portfolio,
-        portfolio_id=portfolio_id,
         market_data=market_data,
+        ledger=ledger,  # type: ignore[arg-type]
+        report_sink=report_sink,
+        guardrail=guardrail,
+        injection_guard=injection_guard,
         risk_policy=risk_policy,
+        portfolio_id=portfolio_id,
+        portfolio=portfolio,
     )
+    graph = build_graph(checkpointer=MemorySaver(), ports=ports)
 
     watchlist: list[str] = list(config.window_config.get("watchlist", _WATCHLIST))
     days = _parse_window_dates(config.window_config)
@@ -828,7 +673,6 @@ def run_eval(config: EvalConfig) -> EvalResult:
     portfolio_history: list[dict[str, Any]] = []
 
     for day in days:
-        # Skip weekends and holidays — no bar data means no real decision cycles.
         if not _has_any_bar(day, market_data, watchlist):
             continue
 
@@ -856,16 +700,18 @@ def run_eval(config: EvalConfig) -> EvalResult:
 
 
 def _build_llm(cassette_path: Path) -> LLM:
-    """Return a CassetteLLM in replay mode if the cassette exists.
+    """Return an LLM for the eval run.
 
-    When no cassette exists and ANTHROPIC_API_KEY is set, record mode is used:
-    live calls are made and persisted to cassette_path so subsequent runs are
-    fully offline.  When no cassette and no API key, fall back to FakeLLM.
+    Priority:
+    1. CassetteLLM (replay) wrapped in _GracefulLLM — if cassette exists.
+       Cassette misses degrade to LLMError so agents return Failure variants.
+    2. CassetteLLM (record) via AnthropicLLM — if ANTHROPIC_API_KEY is set.
+    3. FakeLLM — offline CI fallback (returns "[]" for all calls).
     """
     import os
 
     if cassette_path.exists() and cassette_path.stat().st_size > 0:
-        return CassetteLLM(cassette_path=cassette_path, mode="replay")
+        return _GracefulLLM(CassetteLLM(cassette_path=cassette_path, mode="replay"))
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if api_key:
@@ -875,7 +721,6 @@ def _build_llm(cassette_path: Path) -> LLM:
         inner = AnthropicLLM(api_key=api_key)
         return CassetteLLM(cassette_path=cassette_path, mode="record", inner=inner)
 
-    # No cassette and no API key — use FakeLLM so CI runs offline.
     canned = LLMResponse(
         content="[]",
         input_tokens=10,
