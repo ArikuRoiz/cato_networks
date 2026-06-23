@@ -18,8 +18,29 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from firm.cli import _build_parser, _parse_hitl_response, _parse_tickers, _safe_load_risk_policy
+from firm.cli import _build_parser, _parse_tickers, _safe_load_risk_policy
 from firm.config.settings import RiskPolicyConfig
+
+
+def _make_hitl_request() -> object:
+    """Build a minimal, non-expired HITLRequest for channel tests."""
+    import uuid
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+
+    from firm.ports.types import HITLRequest
+
+    return HITLRequest(
+        trade_id=uuid.uuid4(),
+        symbol="NVDA",
+        side="buy",
+        qty_str="10",
+        notional=Decimal("1000"),
+        reason="test",
+        expires_at=datetime.now(tz=UTC) + timedelta(minutes=10),
+        correlation_id="cid-1",
+    )
+
 
 # ---------------------------------------------------------------------------
 # _build_parser — argument parsing
@@ -118,54 +139,82 @@ class TestParseTickers:
 
 
 # ---------------------------------------------------------------------------
-# _parse_hitl_response — HITL console decision parsing
+# ConsoleApprovalChannel — console decision key mapping
 # ---------------------------------------------------------------------------
 
 
-class TestParseHitlResponse:
-    """The console parser maps a raw key to a structured HITLDecision.
+class TestConsoleApprovalChannel:
+    """The console channel maps a raw key to a structured HITLDecision.
 
     Under the every-cycle HITL model the operator picks the ACTION to take:
     approve the recommendation, or override with buy / sell / hold.  Unknown
     or empty input fails safe to an explicit hold override (no trade).
     """
 
+    def _decision(self, raw: str) -> object:
+        from firm.adapters.approval.console import _PROMPT_KEYS
+        from firm.orchestration.hitl import HITLDecision
+
+        return _PROMPT_KEYS.get(raw, HITLDecision.OVERRIDE_HOLD)
+
     def test_approve_short(self) -> None:
         from firm.orchestration.hitl import HITLDecision
 
-        assert _parse_hitl_response("a") is HITLDecision.APPROVE
+        assert self._decision("a") is HITLDecision.APPROVE
 
     def test_approve_full(self) -> None:
         from firm.orchestration.hitl import HITLDecision
 
-        assert _parse_hitl_response("approve") is HITLDecision.APPROVE
+        assert self._decision("approve") is HITLDecision.APPROVE
 
     def test_buy_override(self) -> None:
         from firm.orchestration.hitl import HITLDecision
 
-        assert _parse_hitl_response("b") is HITLDecision.OVERRIDE_BUY
-        assert _parse_hitl_response("buy") is HITLDecision.OVERRIDE_BUY
+        assert self._decision("b") is HITLDecision.OVERRIDE_BUY
+        assert self._decision("buy") is HITLDecision.OVERRIDE_BUY
 
     def test_sell_override(self) -> None:
         from firm.orchestration.hitl import HITLDecision
 
-        assert _parse_hitl_response("s") is HITLDecision.OVERRIDE_SELL
-        assert _parse_hitl_response("sell") is HITLDecision.OVERRIDE_SELL
+        assert self._decision("s") is HITLDecision.OVERRIDE_SELL
+        assert self._decision("sell") is HITLDecision.OVERRIDE_SELL
 
     def test_hold_override(self) -> None:
         from firm.orchestration.hitl import HITLDecision
 
-        assert _parse_hitl_response("hold") is HITLDecision.OVERRIDE_HOLD
+        assert self._decision("hold") is HITLDecision.OVERRIDE_HOLD
 
     def test_unknown_input_defaults_to_hold(self) -> None:
         from firm.orchestration.hitl import HITLDecision
 
-        assert _parse_hitl_response("maybe") is HITLDecision.OVERRIDE_HOLD
+        assert self._decision("maybe") is HITLDecision.OVERRIDE_HOLD
 
     def test_empty_string_defaults_to_hold(self) -> None:
         from firm.orchestration.hitl import HITLDecision
 
-        assert _parse_hitl_response("") is HITLDecision.OVERRIDE_HOLD
+        assert self._decision("") is HITLDecision.OVERRIDE_HOLD
+
+    def test_request_decision_reads_stdin(self) -> None:
+        from unittest.mock import patch
+
+        from firm.adapters.approval.console import ConsoleApprovalChannel
+        from firm.orchestration.hitl import HITLDecision
+
+        channel = ConsoleApprovalChannel()
+        req = _make_hitl_request()
+        with patch("builtins.input", return_value="b"):
+            assert channel.request_decision(req) is HITLDecision.OVERRIDE_BUY
+
+    def test_request_decision_eof_fails_safe_to_hold(self) -> None:
+        from unittest.mock import patch
+
+        from firm.adapters.approval.console import ConsoleApprovalChannel
+        from firm.orchestration.hitl import HITLDecision
+
+        channel = ConsoleApprovalChannel()
+        req = _make_hitl_request()
+        with patch("builtins.input", side_effect=EOFError):
+            assert channel.request_decision(req) is HITLDecision.OVERRIDE_HOLD
 
 
 # ---------------------------------------------------------------------------

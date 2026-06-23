@@ -1,5 +1,6 @@
 """Protocol interfaces defining the IO seams: MarketDataSource, EvidenceStore, LLM, ReportSink."""
 
+from firm.ports.approval import ApprovalChannel
 from firm.ports.evidence import EvidenceStore
 from firm.ports.llm import LLM
 from firm.ports.market_data import MarketDataSource
@@ -17,6 +18,7 @@ from firm.ports.types import (
 
 __all__ = [
     "LLM",
+    "ApprovalChannel",
     "ApprovalResult",
     "Chunk",
     "DailyReport",

@@ -39,7 +39,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -572,27 +572,8 @@ def _alternatives_keyboard(recommendation: str, correlation_id: str) -> list[lis
 
 def _build_hitl_request(interrupt_payload: dict[str, Any], correlation_id: str) -> HITLRequest:
     """Construct a typed HITLRequest from the graph's interrupt payload."""
-    proposal = interrupt_payload.get("trade_proposal") or {}
-    research_plan = interrupt_payload.get("research_plan") or {}
-    expires_at = datetime.now(tz=UTC) + timedelta(minutes=_HITL_EXPIRY_MINUTES)
-    return HITLRequest(
-        trade_id=uuid.UUID(str(proposal.get("id", uuid.uuid4()))),
-        symbol=str(proposal.get("symbol", "?")),
-        side=str(proposal.get("side", "buy")),
-        qty_str=str(proposal.get("qty", "0")),
-        notional=Decimal(str(proposal.get("notional", "0"))),
-        reason=str(proposal.get("rationale", "Risk Committee review required")),
-        expires_at=expires_at,
-        correlation_id=correlation_id,
-        recommendation=str(research_plan["recommendation"])
-        if research_plan.get("recommendation")
-        else None,
-        conviction=float(research_plan["conviction"])
-        if research_plan.get("conviction") is not None
-        else None,
-        rationale=str(research_plan["rationale"]) if research_plan.get("rationale") else None,
-        bull_case=str(research_plan["bull_summary"]) if research_plan.get("bull_summary") else None,
-        bear_case=str(research_plan["bear_summary"]) if research_plan.get("bear_summary") else None,
+    return HITLRequest.from_interrupt(
+        interrupt_payload, correlation_id, expiry_minutes=_HITL_EXPIRY_MINUTES
     )
 
 

@@ -750,37 +750,15 @@ def _run_live_graph_loop(
 ) -> None:
     """Invoke the graph once per ticker, handling HITL interrupts.
 
-    The HITL surface is selected by *hitl_channel*:
-      - ``"auto"``     — telegram when settings.has_telegram, else console.
-      - ``"telegram"`` — always Telegram (dry-run mode if credentials absent).
-      - ``"console"``  — always interactive stdin.
+    The HITL surface is selected by *hitl_channel* via the approval-channel
+    registry (``console`` / ``telegram`` / ``slack`` / ``auto``); ``auto`` uses
+    Telegram when configured, else console.
     """
-    hitl_sink = _build_hitl_sink(hitl_channel, settings)
+    from firm.adapters.approval import build_approval_channel
+
+    channel = build_approval_channel(hitl_channel, settings)
     for symbol in tickers:
-        _invoke_live_symbol(graph, symbol, decision_ts, settings, hitl_sink, force_buy)
-
-
-def _build_hitl_sink(hitl_channel: str, settings: Settings) -> Any:
-    """Construct the appropriate HITL sink based on *hitl_channel* and settings.
-
-    Returns a ``TelegramHITL`` or ``None`` (None → fall back to console prompt).
-    """
-    from firm.adapters.telegram import TelegramHITL
-
-    if hitl_channel == "console":
-        return None
-    if hitl_channel == "telegram":
-        return TelegramHITL(
-            token=settings.telegram_bot_token,
-            chat_id=settings.telegram_chat_id,
-        )
-    # "auto": use Telegram when credentials are present, else console
-    if settings.has_telegram:
-        return TelegramHITL(
-            token=settings.telegram_bot_token,
-            chat_id=settings.telegram_chat_id,
-        )
-    return None
+        _invoke_live_symbol(graph, symbol, decision_ts, settings, channel, force_buy)
 
 
 def _invoke_live_symbol(
@@ -788,14 +766,14 @@ def _invoke_live_symbol(
     symbol: str,
     decision_ts: datetime,
     settings: Settings,
-    hitl_sink: Any = None,
+    channel: Any = None,
     force_buy: bool = False,
 ) -> None:
     """Stream the graph for one symbol; block on HITL interrupts.
 
-    When *hitl_sink* is a ``TelegramHITL`` instance the HITL decision is routed
-    through Telegram long-polling.  When *hitl_sink* is None the console prompt
-    is used.  *force_buy* injects a synthetic BUY plan (demo override) so a
+    On a HITL interrupt the *channel* (an ``ApprovalChannel``) is asked for a
+    structured decision, which is resumed through the shared ``resume_decision``
+    entry point.  *force_buy* injects a synthetic BUY plan (demo override) so a
     trade > 5% NAV reliably fires the HITL interrupt.
     """
     import uuid
@@ -844,9 +822,9 @@ def _invoke_live_symbol(
             if not interrupted:
                 break
 
-            # Route to the configured HITL surface to obtain a structured decision,
+            # Ask the configured approval channel for a structured decision,
             # then resume via the shared resume_decision interface.
-            decision = _resolve_hitl_decision(symbol, interrupt_payload, correlation_id, hitl_sink)
+            decision = _channel_decision(channel, interrupt_payload, correlation_id)
             final_state = resume_decision(graph, thread_id, decision)
             break  # single HITL per cycle
 
@@ -864,124 +842,29 @@ def _invoke_live_symbol(
         reset_correlation_id(token)
 
 
-def _resolve_hitl_decision(
-    symbol: str,
+def _channel_decision(
+    channel: Any,
     interrupt_payload: dict[str, Any],
     correlation_id: str,
-    hitl_sink: Any,
 ) -> Any:
-    """Route the HITL decision to Telegram or console; return a HITLDecision."""
-    from firm.adapters.telegram import TelegramHITL
+    """Build a HITLRequest from the interrupt payload and ask *channel* to decide.
 
-    if isinstance(hitl_sink, TelegramHITL):
-        return _telegram_hitl_decision(interrupt_payload, correlation_id, hitl_sink)
-    return _console_hitl_prompt(symbol, interrupt_payload)
-
-
-def _telegram_hitl_decision(
-    interrupt_payload: dict[str, Any],
-    correlation_id: str,
-    hitl_sink: Any,
-) -> Any:
-    """Build a HITLRequest from the interrupt payload and block on Telegram approval.
-
-    Returns a HITLDecision. The two-step Telegram override UI (approve / reject →
-    buy|sell|hold) is a separate follow-up ticket; here a Telegram approve maps to
-    APPROVE, reject maps to OVERRIDE_HOLD, and timeout maps to EXPIRE.
+    Returns a structured ``HITLDecision`` (the channel maps timeout / undeliverable
+    to ``EXPIRE`` — never auto-approve).
     """
-    import uuid
-    from datetime import timedelta
-    from decimal import Decimal
-
-    from firm.domain.enums import HITLStatus
-    from firm.orchestration.hitl import HITLDecision
     from firm.ports.types import HITLRequest
 
-    proposal = interrupt_payload.get("trade_proposal") or {}
-    research_plan = interrupt_payload.get("research_plan") or {}
-    expires_at = datetime.now(tz=UTC) + timedelta(minutes=10)
-    req = HITLRequest(
-        trade_id=uuid.UUID(str(proposal.get("id", uuid.uuid4()))),
-        symbol=str(proposal.get("symbol", "?")),
-        side=str(proposal.get("side", "buy")),
-        qty_str=str(proposal.get("qty", "0")),
-        notional=Decimal(str(proposal.get("notional", "0"))),
-        reason=str(proposal.get("rationale", "Risk Committee review required")),
-        expires_at=expires_at,
-        correlation_id=correlation_id,
-        recommendation=str(research_plan["recommendation"])
-        if research_plan.get("recommendation")
-        else None,
-        conviction=float(research_plan["conviction"])
-        if research_plan.get("conviction") is not None
-        else None,
-        rationale=str(research_plan["rationale"]) if research_plan.get("rationale") else None,
-        bull_case=str(research_plan["bull_summary"]) if research_plan.get("bull_summary") else None,
-        bear_case=str(research_plan["bear_summary"]) if research_plan.get("bear_summary") else None,
-    )
-    result = hitl_sink.send_hitl_request(req)
+    req = HITLRequest.from_interrupt(interrupt_payload, correlation_id)
+    decision = channel.request_decision(req)
     _emit(
         {
-            "event": "hitl_telegram_decision",
+            "event": "hitl_decision",
             "correlation_id": correlation_id,
-            "status": result.status,
+            "channel": type(channel).__name__,
+            "decision": decision.value,
         }
     )
-    if result.status == HITLStatus.APPROVED:
-        return HITLDecision.APPROVE
-    if result.status == HITLStatus.REJECTED:
-        return HITLDecision.OVERRIDE_HOLD
-    # EXPIRED or any other status → fail-safe timeout rejection
-    return HITLDecision.EXPIRE
-
-
-def _console_hitl_prompt(
-    symbol: str,
-    payload: dict[str, Any],
-) -> Any:
-    """Block on console input for a HITL decision; return a HITLDecision.
-
-    Every cycle pauses for the operator, who decides the action directly:
-
-        [a]pprove — execute the recommended action (buy/sell as sized; hold = no trade)
-        [b]uy     — override: size and buy now
-        [s]ell    — override: sell the existing holding (no-op if none)
-        [h]old    — override: no trade
-
-    Any unrecognised input defaults to a hold override for safety.
-    """
-    proposal = payload.get("trade_proposal", {})
-    research_plan = payload.get("research_plan") or {}
-    recommendation = research_plan.get("recommendation", "?")
-    print(
-        f"\n[HITL] Decision required for {symbol} (every cycle pauses)\n"
-        f"  Recommendation: {recommendation}\n"
-        f"  Proposed trade: {proposal}\n"
-        "  Options: [a]pprove  [b]uy  [s]ell  [h]old",
-        flush=True,
-    )
-    try:
-        raw = input("Decision (a/b/s/h) > ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        raw = "h"
-    return _parse_hitl_response(raw)
-
-
-def _parse_hitl_response(raw: str) -> Any:
-    """Parse a raw console response into a HITLDecision.
-
-    Defaults to an explicit hold override on unrecognised input so ambiguity is
-    safe (no trade) while still recording a human decision.
-    """
-    from firm.orchestration.hitl import HITLDecision
-
-    if raw in {"a", "approve"}:
-        return HITLDecision.APPROVE
-    if raw in {"b", "buy"}:
-        return HITLDecision.OVERRIDE_BUY
-    if raw in {"s", "sell"}:
-        return HITLDecision.OVERRIDE_SELL
-    return HITLDecision.OVERRIDE_HOLD
+    return decision
 
 
 # ---------------------------------------------------------------------------
@@ -1223,15 +1106,21 @@ def _add_run_subcommand(sub: Any) -> None:
         metavar="N",
         help=f"Number of calendar days of market data + news to pull (default: {_DEFAULT_LOOKBACK_DAYS}).",
     )
+    from firm.adapters.approval import AVAILABLE_CHANNELS
+
     run_p.add_argument(
         "--hitl",
-        choices=["console", "telegram", "auto"],
+        choices=list(AVAILABLE_CHANNELS),
         default="auto",
         dest="hitl",
         help=(
-            "HITL approval channel: 'console' = interactive stdin prompt, "
-            "'telegram' = Telegram bot (requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env), "
-            "'auto' = telegram when token is set, else console (default: auto)."
+            "HITL approval channel. Choices: "
+            "'console' = interactive stdin prompt; "
+            "'telegram' = Telegram bot blocking long-poll "
+            "(requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env); "
+            "'slack' = Slack Block Kit card (send wired; receive needs an interactivity "
+            "webhook — returns EXPIRED until then); "
+            "'auto' = telegram when configured, else console (default: auto)."
         ),
     )
     run_p.add_argument(

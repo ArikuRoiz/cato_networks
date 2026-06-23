@@ -123,7 +123,7 @@ def resume_approval(
     """Resume an interrupted graph thread with the operator decision.
 
     Builds a LangGraph ``Command`` equivalent to what the CLI does in
-    ``_invoke_live_symbol`` after ``_console_hitl_prompt`` returns.  Also
+    ``_invoke_live_symbol`` after the approval channel returns a decision.  Also
     removes the thread from the pending_runs registry so it no longer appears
     in GET /api/approvals/pending.
 
