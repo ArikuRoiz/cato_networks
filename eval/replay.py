@@ -28,7 +28,6 @@ Design notes
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -37,22 +36,21 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from langgraph.checkpoint.memory import MemorySaver
 from pydantic import BaseModel
 
-from firm.adapters.fakes import FakeEvidenceStore, FakeReportSink
-from firm.adapters.llm_offline import build_offline_llm
+from firm.adapters.fakes import FakeReportSink
 from firm.adapters.market_data_frozen import FrozenMarketData
 from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
 from firm.agents.research import Evidence, Refusal
-from firm.config.settings import RiskPolicyConfig, load_risk_policy
-from firm.domain import Holding, Lot, Portfolio, RiskPolicy, Trade, TradeStatus
-from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
-from firm.orchestration.graph import build_graph
-from firm.orchestration.nodes import NodePorts
-from firm.persistence.ledger import CycleAuditRecord
-from firm.ports.llm import LLM
-from firm.ports.types import NewsDoc
+
+# Re-exported for tests that depend on the in-memory ledger living in eval.
+# The implementation now lives in the composition root so the demo and eval
+# share one fake ledger; ``_FakeLedger`` remains the public name here.
+from firm.composition import InMemoryLedger as _FakeLedger
+from firm.composition import build_offline_pipeline
+from firm.domain import Portfolio
+
+__all__ = ["CycleRecord", "EvalConfig", "EvalResult", "_FakeLedger", "run_eval"]
 
 # ---------------------------------------------------------------------------
 # Configuration and result schemas
@@ -114,228 +112,6 @@ class EvalResult(BaseModel):
     final_nav: float
 
     model_config = {"frozen": True}
-
-
-# ---------------------------------------------------------------------------
-# Fake ledger (no Postgres required for eval)
-# ---------------------------------------------------------------------------
-
-
-class _ApprovalRecord:
-    """In-memory record of a HITL decision captured by ``_FakeLedger``."""
-
-    __slots__ = (
-        "correlation_id",
-        "decided_at",
-        "decided_by",
-        "edited_qty",
-        "original_notional",
-        "original_qty",
-        "status",
-        "trade_id",
-    )
-
-    def __init__(
-        self,
-        *,
-        correlation_id: uuid.UUID,
-        trade_id: uuid.UUID,
-        status: str,
-        original_notional: Decimal,
-        original_qty: Decimal,
-        edited_qty: Decimal | None,
-        decided_at: datetime,
-        decided_by: str,
-    ) -> None:
-        self.correlation_id = correlation_id
-        self.trade_id = trade_id
-        self.status = status
-        self.original_notional = original_notional
-        self.original_qty = original_qty
-        self.edited_qty = edited_qty
-        self.decided_at = decided_at
-        self.decided_by = decided_by
-
-
-class _FakeLedger:
-    """Minimal in-memory ledger for eval runs.
-
-    Tracks the portfolio in memory.  No Postgres, no ACID — this is
-    only correct for a single-threaded eval run.
-
-    ``buy()`` and ``sell()`` return a ``Trade`` with FILLED status to
-    satisfy the structural contract of ``LedgerRepository.buy()`` /
-    ``LedgerRepository.sell()``.
-
-    ``record_approval()`` appends to ``approvals`` for offline exercise
-    of the HITL recording path without a database.
-    """
-
-    def __init__(self, portfolio: Portfolio, portfolio_id: uuid.UUID) -> None:
-        self._portfolio = portfolio
-        self._portfolio_id = portfolio_id
-        self._trades: list[Trade] = []
-        self.approvals: list[_ApprovalRecord] = []
-        self.cycles: list[CycleAuditRecord] = []
-
-    def ensure_portfolio(
-        self,
-        portfolio_id: uuid.UUID,
-        starting_cash: Decimal,
-    ) -> None:
-        """No-op in-memory version of LedgerRepository.ensure_portfolio.
-
-        The portfolio is already constructed before _FakeLedger is created,
-        so this is a no-op that preserves the offline demo/eval contract.
-        """
-
-    def get_portfolio(self, portfolio_id: uuid.UUID) -> Portfolio:
-        return self._portfolio
-
-    def get_trades_for_cycle(self, cycle_id: uuid.UUID) -> list[Trade]:
-        return [t for t in self._trades if t.cycle_id == cycle_id]
-
-    def buy(
-        self,
-        trade: Trade,
-        portfolio_id: uuid.UUID,
-        opened_at: datetime | None = None,
-    ) -> Trade:
-        """Debit cash and add a holding; return the filled Trade."""
-        filled = trade.model_copy(update={"status": TradeStatus.FILLED})
-        notional = trade.qty * (trade.fill_price or trade.requested_price)
-        commission = trade.commission or Decimal("0")
-        self._portfolio.cash -= notional + commission
-        _apply_buy(self._portfolio, trade, opened_at)
-        self._trades.append(filled)
-        return filled
-
-    def sell(self, trade: Trade, portfolio_id: uuid.UUID) -> Trade:
-        """Credit cash and reduce holding; return the filled Trade."""
-        filled = trade.model_copy(update={"status": TradeStatus.FILLED})
-        notional = trade.qty * (trade.fill_price or trade.requested_price)
-        commission = trade.commission or Decimal("0")
-        self._portfolio.cash += notional - commission
-        _apply_sell(self._portfolio, trade)
-        self._trades.append(filled)
-        return filled
-
-    def record_approval(
-        self,
-        *,
-        correlation_id: uuid.UUID,
-        trade_id: uuid.UUID,
-        status: str,
-        original_notional: Decimal,
-        original_qty: Decimal,
-        edited_qty: Decimal | None = None,
-        decided_at: datetime | None = None,
-        decided_by: str = "risk_committee",
-    ) -> None:
-        """Capture a HITL decision in memory for offline eval and testing."""
-        ts = decided_at if decided_at is not None else datetime.now(tz=UTC)
-        self.approvals.append(
-            _ApprovalRecord(
-                correlation_id=correlation_id,
-                trade_id=trade_id,
-                status=status,
-                original_notional=original_notional,
-                original_qty=original_qty,
-                edited_qty=edited_qty,
-                decided_at=ts,
-                decided_by=decided_by,
-            )
-        )
-
-    def record_cycle(self, record: CycleAuditRecord) -> None:
-        """Capture a decision cycle record in memory for offline eval and testing."""
-        self.cycles.append(record)
-
-
-def _apply_buy(
-    portfolio: Portfolio,
-    trade: Trade,
-    opened_at: datetime | None = None,
-) -> None:
-    """Update in-memory portfolio after a buy — no FIFO lot tracking."""
-    fill_price = trade.fill_price or trade.requested_price
-    ts = opened_at if opened_at is not None else datetime.now(tz=UTC)
-    holding = portfolio.holdings.get(trade.symbol)
-    if holding is None:
-        lot = Lot(symbol=trade.symbol, qty=trade.qty, cost=fill_price, opened_at=ts)
-        portfolio.holdings[trade.symbol] = Holding(symbol=trade.symbol, lots=[lot])
-    else:
-        lot = Lot(symbol=trade.symbol, qty=trade.qty, cost=fill_price, opened_at=ts)
-        holding.lots.append(lot)
-
-
-def _apply_sell(portfolio: Portfolio, trade: Trade) -> None:
-    """Update in-memory portfolio after a sell — remove quantity FIFO."""
-    holding = portfolio.holdings.get(trade.symbol)
-    if holding is None:
-        return
-    remaining = trade.qty
-    for lot in list(holding.lots):
-        if remaining <= Decimal("0"):
-            break
-        if lot.qty <= remaining:
-            remaining -= lot.qty
-            lot.qty = Decimal("0")
-        else:
-            lot.qty -= remaining
-            remaining = Decimal("0")
-
-
-# ---------------------------------------------------------------------------
-# Evidence store population from corpus.json
-# ---------------------------------------------------------------------------
-
-
-def _load_corpus(corpus_path: Path) -> list[NewsDoc]:
-    """Parse corpus.json into NewsDoc objects."""
-    raw: list[dict[str, Any]] = json.loads(corpus_path.read_text(encoding="utf-8"))
-    docs: list[NewsDoc] = []
-    for item in raw:
-        docs.append(
-            NewsDoc(
-                symbol=item["symbol"],
-                text=item["text"],
-                source_url=item["source_url"],
-                published_at=datetime.fromisoformat(item["published_at"].replace("Z", "+00:00")),
-            )
-        )
-    return docs
-
-
-def _build_evidence_store(corpus_path: Path) -> FakeEvidenceStore:
-    """Populate a FakeEvidenceStore from the corpus file."""
-    store = FakeEvidenceStore()
-    for doc in _load_corpus(corpus_path):
-        store.embed_and_store(doc)
-    return store
-
-
-# ---------------------------------------------------------------------------
-# Default RiskPolicyConfig for eval (no Postgres / YAML required)
-# ---------------------------------------------------------------------------
-
-
-def _default_risk_policy() -> RiskPolicyConfig:
-    """Return the locked-decision risk policy for eval runs."""
-    return RiskPolicyConfig(
-        max_trade_notional_pct=0.10,
-        max_name_concentration_pct=0.25,
-        daily_loss_halt_pct=0.03,
-        hitl_threshold_pct=0.05,
-        buy_threshold=0.05,
-        sell_threshold=-0.05,
-        momentum_weight=0.6,
-        sentiment_weight=0.4,
-        momentum_lookback_days=5,
-        max_events_per_symbol_per_hour=3,
-        event_relevance_threshold=0.7,
-        token_budget_per_cycle=50000,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -643,45 +419,23 @@ def run_eval(config: EvalConfig) -> EvalResult:
     The portfolio is shared across all cycles within the run — trades
     accumulate on the same in-memory portfolio, mirroring what a live run
     would see.
+
+    The graph + ports + in-memory ledger are assembled by the shared
+    composition root (:func:`firm.composition.build_offline_pipeline`); the
+    eval supplies its auto-approving ``FakeReportSink`` and its own cassette
+    path so a missing cassette falls back to the deterministic ``FakeLLM``.
     """
     project_root = Path(__file__).parent.parent
-    bars_dir = project_root / "data" / "bars"
-    corpus_path = project_root / "data" / "news" / "corpus.json"
+    market_data = FrozenMarketData(project_root / "data" / "bars")
 
-    market_data = FrozenMarketData(bars_dir)
-    evidence_store = _build_evidence_store(corpus_path)
-    llm: LLM = _build_llm(config.cassette_path)
-    risk_policy = _try_load_risk_policy(project_root)
-
-    portfolio_id = uuid.uuid4()
-    portfolio = Portfolio(cash=_INITIAL_NAV)
-    ledger = _FakeLedger(portfolio, portfolio_id)
-    injection_guard = InjectionGuard()
-    domain_policy = RiskPolicy(
-        max_trade_notional_pct=Decimal(str(risk_policy.max_trade_notional_pct)),
-        max_name_concentration_pct=Decimal(str(risk_policy.max_name_concentration_pct)),
-        daily_loss_halt_pct=Decimal(str(risk_policy.daily_loss_halt_pct)),
-        hitl_threshold_pct=Decimal(str(risk_policy.hitl_threshold_pct)),
+    pipeline = build_offline_pipeline(
+        project_root,
+        initial_cash=_INITIAL_NAV,
+        report_sink=FakeReportSink(),
+        cassette_path=config.cassette_path,
     )
-    guardrail = LedgerGuardrail(domain_policy)
-    report_sink = FakeReportSink()
-
-    from firm.services.calendar import NYSECalendar
-
-    ports = NodePorts(
-        evidence=evidence_store,
-        llm=llm,
-        market_data=market_data,
-        ledger=ledger,  # type: ignore[arg-type]
-        report_sink=report_sink,
-        guardrail=guardrail,
-        injection_guard=injection_guard,
-        risk_policy=risk_policy,
-        portfolio_id=portfolio_id,
-        portfolio=portfolio,
-        calendar=NYSECalendar(),
-    )
-    graph = build_graph(checkpointer=MemorySaver(), ports=ports)
+    graph = pipeline.graph
+    portfolio = pipeline.portfolio
 
     watchlist: list[str] = list(config.window_config.get("watchlist", _WATCHLIST))
     days = _parse_window_dates(config.window_config)
@@ -714,27 +468,6 @@ def run_eval(config: EvalConfig) -> EvalResult:
         initial_nav=float(_INITIAL_NAV),
         final_nav=final_nav,
     )
-
-
-def _build_llm(cassette_path: Path) -> LLM:
-    """Return the appropriate offline LLM for the eval harness.
-
-    Delegates to ``build_offline_llm`` — see that function for selection rules.
-    A bare ``ANTHROPIC_API_KEY`` does NOT trigger live calls; only
-    ``CASSETTE_MODE=record`` does (explicit opt-in).
-    """
-    return build_offline_llm(cassette_path)
-
-
-def _try_load_risk_policy(project_root: Path) -> RiskPolicyConfig:
-    """Load risk policy from YAML if available, else return defaults."""
-    policy_path = project_root / "config" / "risk_policy.yaml"
-    if policy_path.exists():
-        try:
-            return load_risk_policy(policy_path)
-        except Exception:
-            pass
-    return _default_risk_policy()
 
 
 # ---------------------------------------------------------------------------

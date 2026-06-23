@@ -22,7 +22,6 @@ import logging
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -59,43 +58,26 @@ class InterruptedThread:
 # ---------------------------------------------------------------------------
 
 
-_STARTING_CASH = Decimal("100000")
-
-
 def build_live_graph(settings: Any) -> LiveGraph:
     """Wire all live adapters and return a ready-to-use graph + portfolio_id.
 
-    Equivalent to cli._build_live_pipeline but returns a structured object
-    so the web layer can access the checkpointer and engine independently.
-
-    Also calls ``ledger.ensure_portfolio()`` so GET /api/portfolio always
-    finds a row with the real starting cash rather than returning zeros.
+    Delegates the heavy lifting to the shared composition root
+    (:func:`firm.composition.build_live_pipeline`) and adapts the returned
+    :class:`firm.composition.Pipeline` into the web-specific :class:`LiveGraph`,
+    which exposes the checkpointer, engine and ledger that the HITL endpoints
+    and pending-run registry need.  ``ensure_portfolio`` is already called
+    inside the composition builder, so GET /api/portfolio always finds a row
+    with the real starting cash.
     """
-    root = _project_root()
-    risk_policy_config = _safe_load_risk_policy(root)
+    from firm.composition import build_live_pipeline
 
-    engine = _build_engine(settings.database_url)
-    portfolio_id, guardrail, injection_guard, ledger = _build_live_domain_objects(
-        risk_policy_config, engine
-    )
-
-    # Idempotently persist the portfolio row so the dashboard shows real NAV.
-    ledger.ensure_portfolio(portfolio_id, _STARTING_CASH)
-
-    checkpointer = _build_checkpointer(settings.database_url)
-    ports = _build_ports(
-        root, risk_policy_config, settings, portfolio_id, guardrail, injection_guard, ledger
-    )
-
-    from firm.orchestration.graph import build_graph
-
-    graph = build_graph(checkpointer=checkpointer, ports=ports)
+    pipeline = build_live_pipeline(settings)
     return LiveGraph(
-        graph=graph,
-        portfolio_id=portfolio_id,
-        checkpointer=checkpointer,
-        engine=engine,
-        ledger=ledger,
+        graph=pipeline.graph,
+        portfolio_id=pipeline.portfolio_id,
+        checkpointer=pipeline.checkpointer,
+        engine=pipeline.engine,
+        ledger=pipeline.ledger,
     )
 
 
@@ -146,132 +128,6 @@ def resume_approval(
         "hitl_status": HITLDecision(hitl_decision).hitl_status,
         "outcome": final_state.get("cycle_outcome", "unknown"),
     }
-
-
-# ---------------------------------------------------------------------------
-# Private helpers — graph construction
-# ---------------------------------------------------------------------------
-
-
-def _project_root() -> Path:
-    return Path(__file__).parent.parent.parent.parent
-
-
-def _build_engine(database_url: str) -> Any:
-    from sqlalchemy import create_engine
-
-    from firm.persistence.db_url import to_sqlalchemy_url
-
-    return create_engine(to_sqlalchemy_url(database_url))
-
-
-def _build_checkpointer(database_url: str) -> Any:
-    import psycopg
-    import psycopg.rows
-
-    from firm.orchestration.checkpointer import _normalise_database_url, setup_checkpointer
-
-    live_url = _normalise_database_url(database_url)
-    pg_conn = psycopg.connect(  # pyright: ignore[reportArgumentType]
-        live_url,
-        autocommit=True,
-        prepare_threshold=0,
-        row_factory=psycopg.rows.dict_row,
-    )
-    return setup_checkpointer(pg_conn)
-
-
-def _build_live_domain_objects(
-    risk_policy_config: Any,
-    engine: Any,
-) -> tuple[uuid.UUID, Any, Any, Any]:
-    """Return (portfolio_id, guardrail, injection_guard, ledger).
-
-    Always uses FIRM_PORTFOLIO_ID so the web runtime shares persistent
-    portfolio state with the CLI run command across restarts.
-    """
-    from firm.domain import RiskPolicy
-    from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
-    from firm.persistence.ledger import FIRM_PORTFOLIO_ID, LedgerRepository
-
-    domain_policy = RiskPolicy(
-        max_trade_notional_pct=Decimal(str(risk_policy_config.max_trade_notional_pct)),
-        max_name_concentration_pct=Decimal(str(risk_policy_config.max_name_concentration_pct)),
-        daily_loss_halt_pct=Decimal(str(risk_policy_config.daily_loss_halt_pct)),
-        hitl_threshold_pct=Decimal(str(risk_policy_config.hitl_threshold_pct)),
-    )
-    guardrail = LedgerGuardrail(domain_policy)
-    injection_guard = InjectionGuard()
-    ledger = LedgerRepository(engine)
-    return FIRM_PORTFOLIO_ID, guardrail, injection_guard, ledger
-
-
-def _build_ports(
-    root: Path,
-    risk_policy_config: Any,
-    settings: Any,
-    portfolio_id: uuid.UUID,
-    guardrail: Any,
-    injection_guard: Any,
-    ledger: Any,
-) -> Any:
-    """Assemble NodePorts with all live adapters."""
-    import psycopg
-
-    from firm.adapters.evidence_pgvector import PgvectorEvidenceStore
-    from firm.adapters.llm_anthropic import AnthropicLLM
-    from firm.adapters.llm_offline import GracefulLLM
-    from firm.adapters.llm_token_budget import TokenBudgetLLM
-    from firm.adapters.market_data_live import LiveMarketData
-    from firm.adapters.report import ExcelReportSink, MultiReportSink, SlackReportSink
-    from firm.domain.guardrails import TokenBudgetCircuitBreaker
-    from firm.orchestration.checkpointer import _normalise_database_url
-    from firm.orchestration.nodes import NodePorts
-    from firm.services.calendar import NYSECalendar
-
-    live_url = _normalise_database_url(settings.database_url)
-    evidence_conn = psycopg.connect(live_url)
-    evidence_store = PgvectorEvidenceStore(evidence_conn)
-
-    reports_dir = root / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    report_sink = MultiReportSink(
-        sinks=[
-            ExcelReportSink(output_dir=reports_dir),
-            SlackReportSink(channel=getattr(settings, "slack_channel", "#trading-desk")),
-        ]
-    )
-
-    raw_llm = GracefulLLM(AnthropicLLM(api_key=settings.anthropic_api_key))
-    llm = TokenBudgetLLM(
-        inner=raw_llm,
-        breaker=TokenBudgetCircuitBreaker(),
-        budget=risk_policy_config.token_budget_per_cycle,
-        report_sink=report_sink,
-    )
-
-    from firm.persistence.ledger import FIRM_PORTFOLIO_ID
-
-    portfolio = ledger.get_portfolio(FIRM_PORTFOLIO_ID)
-    return NodePorts(
-        evidence=evidence_store,
-        llm=llm,
-        market_data=LiveMarketData(),
-        ledger=ledger,
-        report_sink=report_sink,
-        guardrail=guardrail,
-        injection_guard=injection_guard,
-        risk_policy=risk_policy_config,
-        portfolio_id=portfolio_id,
-        portfolio=portfolio,
-        calendar=NYSECalendar(),
-    )
-
-
-def _safe_load_risk_policy(root: Path) -> Any:
-    from firm.config.settings import load_risk_policy_or_default
-
-    return load_risk_policy_or_default(root / "config" / "risk_policy.yaml")
 
 
 # ---------------------------------------------------------------------------

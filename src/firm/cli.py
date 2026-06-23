@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from firm.composition import build_live_pipeline, build_offline_pipeline
 from firm.constants import (
     DEFAULT_INITIAL_CASH,
     DEFAULT_LOOKBACK_DAYS,
@@ -41,7 +42,6 @@ from firm.constants import (
     DEFAULT_WEB_PORT,
     DEV_POLL_INTERVAL_SECONDS,
 )
-from firm.ports.llm import LLM
 
 if TYPE_CHECKING:
     from firm.config.settings import RiskPolicyConfig, Settings
@@ -204,106 +204,9 @@ def _cmd_demo(args: argparse.Namespace) -> None:
         }
     )
 
-    graph, _portfolio, _portfolio_id = _build_pipeline(root, DEFAULT_INITIAL_CASH)
-    _run_graph_loop(graph, watchlist, demo_date)
+    pipeline = build_offline_pipeline(root, initial_cash=DEFAULT_INITIAL_CASH)
+    _run_graph_loop(pipeline.graph, watchlist, demo_date)
     _emit({"event": "demo_done", "ts": datetime.now(tz=UTC).isoformat()})
-
-
-def _build_domain_objects(
-    risk_policy_config: RiskPolicyConfig,
-    initial_cash: Any,
-) -> tuple[Any, Any, Any, Any, Any]:
-    """Construct Portfolio, RiskPolicy, LedgerGuardrail, InjectionGuard, FakeLedger.
-
-    Returns (portfolio, portfolio_id, domain_policy, guardrail, ledger).
-    """
-    import uuid
-    from decimal import Decimal
-
-    from eval.replay import _FakeLedger
-    from firm.domain import Portfolio, RiskPolicy
-    from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
-
-    portfolio_id = uuid.uuid4()
-    portfolio = Portfolio(cash=Decimal(str(initial_cash)))
-    domain_policy = RiskPolicy(
-        max_trade_notional_pct=Decimal(str(risk_policy_config.max_trade_notional_pct)),
-        max_name_concentration_pct=Decimal(str(risk_policy_config.max_name_concentration_pct)),
-        daily_loss_halt_pct=Decimal(str(risk_policy_config.daily_loss_halt_pct)),
-        hitl_threshold_pct=Decimal(str(risk_policy_config.hitl_threshold_pct)),
-    )
-    guardrail = LedgerGuardrail(domain_policy)
-    injection_guard = InjectionGuard()
-    ledger = _FakeLedger(portfolio, portfolio_id)
-    return portfolio, portfolio_id, guardrail, injection_guard, ledger
-
-
-def _build_evidence_store(corpus_path: Path) -> Any:
-    """Load corpus docs into a FakeEvidenceStore and return it."""
-    from firm.adapters.fakes import FakeEvidenceStore
-
-    store = FakeEvidenceStore()
-    for doc in _load_corpus_docs(corpus_path):
-        store.embed_and_store(doc)
-    return store
-
-
-def _build_pipeline(root: Path, initial_cash: Any) -> tuple[Any, Any, Any]:
-    """Wire all agents + LangGraph graph for demo and dev commands.
-
-    Returns (graph, portfolio, portfolio_id).
-    """
-    from langgraph.checkpoint.memory import MemorySaver
-
-    from firm.adapters.llm_token_budget import TokenBudgetLLM
-    from firm.adapters.market_data_frozen import FrozenMarketData
-    from firm.adapters.report import ExcelReportSink, MultiReportSink, SlackReportSink
-    from firm.domain.guardrails import TokenBudgetCircuitBreaker
-    from firm.orchestration.graph import build_graph
-    from firm.orchestration.nodes import NodePorts
-    from firm.services.calendar import NYSECalendar
-
-    risk_policy_config = _safe_load_risk_policy(root)
-    portfolio, portfolio_id, guardrail, injection_guard, ledger = _build_domain_objects(
-        risk_policy_config, initial_cash
-    )
-    market_data = FrozenMarketData(root / "data" / "bars")
-    evidence_store = _build_evidence_store(root / "data" / "news" / "corpus.json")
-    reports_dir = root / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-
-    # SlackReportSink degrades gracefully: without SLACK_BOT_TOKEN it logs the
-    # Block Kit payload instead of calling the API (no network, no crash).
-    report_sink = MultiReportSink(
-        sinks=[
-            ExcelReportSink(output_dir=reports_dir),
-            SlackReportSink(channel=os.getenv("SLACK_CHANNEL", "#trading-desk")),
-        ]
-    )
-
-    raw_llm = _build_demo_llm(root / "data" / "cassettes" / "eval.jsonl")
-    llm = TokenBudgetLLM(
-        inner=raw_llm,
-        breaker=TokenBudgetCircuitBreaker(),
-        budget=risk_policy_config.token_budget_per_cycle,
-        report_sink=report_sink,
-    )
-
-    ports = NodePorts(
-        evidence=evidence_store,
-        llm=llm,
-        market_data=market_data,
-        ledger=ledger,
-        report_sink=report_sink,
-        guardrail=guardrail,
-        injection_guard=injection_guard,
-        risk_policy=risk_policy_config,
-        portfolio_id=portfolio_id,
-        portfolio=portfolio,
-        calendar=NYSECalendar(),
-    )
-    graph = build_graph(checkpointer=MemorySaver(), ports=ports)
-    return graph, portfolio, portfolio_id
 
 
 def _emit_cycle_done(
@@ -416,25 +319,6 @@ def _run_graph_loop(
         _invoke_one_symbol(graph, symbol, decision_ts)
 
 
-def _load_corpus_docs(corpus_path: Path) -> list[Any]:
-    """Load corpus.json into NewsDoc objects; return empty list if missing."""
-    if not corpus_path.exists():
-        return []
-    return _parse_news_docs(corpus_path)
-
-
-def _build_demo_llm(cassette_path: Path) -> LLM:
-    """Return the appropriate offline LLM for the demo command.
-
-    Delegates to ``build_offline_llm`` — see that function for selection rules.
-    A bare ``ANTHROPIC_API_KEY`` does NOT trigger live calls; only
-    ``CASSETTE_MODE=record`` does (explicit opt-in).
-    """
-    from firm.adapters.llm_offline import build_offline_llm
-
-    return build_offline_llm(cassette_path)
-
-
 def _safe_load_risk_policy(root: Path) -> RiskPolicyConfig:
     """Load risk policy from YAML, returning defaults on failure."""
     from firm.config.settings import load_risk_policy_or_default
@@ -472,13 +356,13 @@ def _cmd_dev(args: argparse.Namespace) -> None:
 
     _emit({"event": "dev_start", "watchlist": watchlist, "poll_interval_s": poll_interval_s})
 
-    graph, _portfolio, _portfolio_id = _build_pipeline(root, DEFAULT_INITIAL_CASH)
+    pipeline = build_offline_pipeline(root, initial_cash=DEFAULT_INITIAL_CASH)
     cycle_count = 0
     try:
         while True:
             now = datetime.now(tz=UTC)
             _emit({"event": "tick", "ts": now.isoformat(), "cycle": cycle_count})
-            _run_graph_loop(graph, watchlist, now)
+            _run_graph_loop(pipeline.graph, watchlist, now)
             cycle_count += 1
             _emit({"event": "sleeping", "seconds": poll_interval_s})
             time.sleep(poll_interval_s)
@@ -522,9 +406,9 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
     _ingest_live_news(tickers, lookback_days, settings)
 
-    graph, _portfolio, _portfolio_id = _build_live_pipeline(root, DEFAULT_INITIAL_CASH, settings)
+    pipeline = build_live_pipeline(settings, root=root, initial_cash=DEFAULT_INITIAL_CASH)
     decision_ts = datetime.now(tz=UTC)
-    _run_live_graph_loop(graph, tickers, decision_ts, settings, hitl_channel, force_buy)
+    _run_live_graph_loop(pipeline.graph, tickers, decision_ts, settings, hitl_channel, force_buy)
 
     _emit({"event": "run_done", "ts": datetime.now(tz=UTC).isoformat()})
 
@@ -575,122 +459,6 @@ def _ingest_live_news(tickers: list[str], lookback_days: int, settings: Settings
         _emit({"event": "news_ingestion", "status": "ok", "result": result.model_dump()})
     except Exception as exc:
         _emit({"event": "news_ingestion", "status": "warning", "error": str(exc)})
-
-
-def _build_live_pipeline(
-    root: Path,
-    initial_cash: Any,
-    settings: Settings,
-) -> tuple[Any, Any, Any]:
-    """Wire all live adapters + LangGraph graph for the production run command.
-
-    Returns (graph, portfolio, portfolio_id).
-    """
-    import psycopg
-
-    from firm.adapters.evidence_pgvector import PgvectorEvidenceStore
-    from firm.adapters.llm_anthropic import AnthropicLLM
-    from firm.adapters.llm_offline import GracefulLLM
-    from firm.adapters.llm_token_budget import TokenBudgetLLM
-    from firm.adapters.market_data_live import LiveMarketData
-    from firm.adapters.report import ExcelReportSink, MultiReportSink, SlackReportSink
-    from firm.domain.guardrails import TokenBudgetCircuitBreaker
-    from firm.orchestration.checkpointer import _normalise_database_url, setup_checkpointer
-    from firm.orchestration.graph import build_graph
-    from firm.orchestration.nodes import NodePorts
-    from firm.services.calendar import NYSECalendar
-
-    risk_policy_config = _safe_load_risk_policy(root)
-    portfolio, portfolio_id, guardrail, injection_guard, ledger = _build_live_domain_objects(
-        risk_policy_config, initial_cash, settings
-    )
-
-    live_url = _normalise_database_url(settings.database_url)
-    evidence_conn = psycopg.connect(live_url)  # kept open for the run lifetime
-    evidence_store = PgvectorEvidenceStore(evidence_conn)
-
-    reports_dir = root / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    report_sink = MultiReportSink(
-        sinks=[
-            ExcelReportSink(output_dir=reports_dir),
-            SlackReportSink(channel=settings.slack_channel),
-        ]
-    )
-
-    raw_llm = GracefulLLM(AnthropicLLM(api_key=settings.anthropic_api_key))
-    llm = TokenBudgetLLM(
-        inner=raw_llm,
-        breaker=TokenBudgetCircuitBreaker(),
-        budget=risk_policy_config.token_budget_per_cycle,
-        report_sink=report_sink,
-    )
-
-    # PostgresSaver gives durable HITL: graph state survives process restarts.
-    pg_conn = psycopg.connect(  # pyright: ignore[reportArgumentType]
-        live_url,
-        autocommit=True,
-        prepare_threshold=0,
-        row_factory=__import__("psycopg.rows", fromlist=["dict_row"]).dict_row,
-    )
-    checkpointer = setup_checkpointer(pg_conn)
-
-    ports = NodePorts(
-        evidence=evidence_store,
-        llm=llm,
-        market_data=LiveMarketData(),
-        ledger=ledger,
-        report_sink=report_sink,
-        guardrail=guardrail,
-        injection_guard=injection_guard,
-        risk_policy=risk_policy_config,
-        portfolio_id=portfolio_id,
-        portfolio=portfolio,
-        calendar=NYSECalendar(),
-    )
-    graph = build_graph(checkpointer=checkpointer, ports=ports)
-    return graph, portfolio, portfolio_id
-
-
-def _build_live_domain_objects(
-    risk_policy_config: RiskPolicyConfig,
-    initial_cash: Any,
-    settings: Settings,
-) -> tuple[Any, Any, Any, Any, Any]:
-    """Construct Portfolio, RiskPolicy, guards, and the real Postgres LedgerRepository.
-
-    Uses the stable FIRM_PORTFOLIO_ID so portfolio state accumulates across
-    restarts.  Calls ensure_portfolio() to create the row when it does not
-    exist yet, then loads the persisted Portfolio so NAV and sizing reflect
-    real cash + holdings rather than the fresh-run default.
-
-    Returns (portfolio, portfolio_id, guardrail, injection_guard, ledger).
-    """
-    from decimal import Decimal
-
-    from sqlalchemy import create_engine
-
-    from firm.domain import RiskPolicy
-    from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
-    from firm.persistence.db_url import to_sqlalchemy_url
-    from firm.persistence.ledger import FIRM_PORTFOLIO_ID, LedgerRepository
-
-    domain_policy = RiskPolicy(
-        max_trade_notional_pct=Decimal(str(risk_policy_config.max_trade_notional_pct)),
-        max_name_concentration_pct=Decimal(str(risk_policy_config.max_name_concentration_pct)),
-        daily_loss_halt_pct=Decimal(str(risk_policy_config.daily_loss_halt_pct)),
-        hitl_threshold_pct=Decimal(str(risk_policy_config.hitl_threshold_pct)),
-    )
-    guardrail = LedgerGuardrail(domain_policy)
-    injection_guard = InjectionGuard()
-    engine = create_engine(to_sqlalchemy_url(settings.database_url))
-    ledger = LedgerRepository(engine)
-
-    starting_cash = Decimal(str(initial_cash))
-    ledger.ensure_portfolio(FIRM_PORTFOLIO_ID, starting_cash)
-    portfolio = ledger.get_portfolio(FIRM_PORTFOLIO_ID)
-
-    return portfolio, FIRM_PORTFOLIO_ID, guardrail, injection_guard, ledger
 
 
 def _run_live_graph_loop(
@@ -847,11 +615,11 @@ def _cmd_bot(args: argparse.Namespace) -> None:
         }
     )
 
-    graph, _portfolio, _portfolio_id = _build_live_pipeline(root, DEFAULT_INITIAL_CASH, settings)
+    pipeline = build_live_pipeline(settings, root=root, initial_cash=DEFAULT_INITIAL_CASH)
 
     from firm.bot.service import build_bot_service
 
-    bot = build_bot_service(settings=settings, graph=graph)
+    bot = build_bot_service(settings=settings, graph=pipeline.graph)
     try:
         bot.run()
     except KeyboardInterrupt:
