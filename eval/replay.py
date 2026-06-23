@@ -589,6 +589,8 @@ def run_eval(config: EvalConfig) -> EvalResult:
     guardrail = LedgerGuardrail(domain_policy)
     report_sink = FakeReportSink()
 
+    from firm.services.calendar import NYSECalendar
+
     ports = NodePorts(
         evidence=evidence_store,
         llm=llm,
@@ -600,6 +602,7 @@ def run_eval(config: EvalConfig) -> EvalResult:
         risk_policy=risk_policy,
         portfolio_id=portfolio_id,
         portfolio=portfolio,
+        calendar=NYSECalendar(),
     )
     graph = build_graph(checkpointer=MemorySaver(), ports=ports)
 

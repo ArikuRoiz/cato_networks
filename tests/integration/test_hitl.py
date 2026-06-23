@@ -24,7 +24,7 @@ from decimal import Decimal
 import pytest
 from testcontainers.postgres import PostgresContainer
 
-from firm.adapters.fakes import FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
+from firm.adapters.fakes import FakeCalendar, FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
 from firm.config.settings import RiskPolicyConfig
 from firm.domain import Portfolio, RiskPolicy
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
@@ -75,6 +75,7 @@ def _make_ports() -> NodePorts:
         risk_policy=_RISK_POLICY,
         portfolio_id=uuid.uuid4(),
         portfolio=Portfolio(cash=Decimal("10000")),
+        calendar=FakeCalendar(is_open=True),
     )
 
 

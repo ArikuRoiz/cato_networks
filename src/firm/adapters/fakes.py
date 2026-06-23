@@ -26,6 +26,30 @@ from firm.ports.types import (
     ToolExecutors,
 )
 
+
+# ---------------------------------------------------------------------------
+# FakeCalendar
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FakeCalendar:
+    """In-memory fake for ``NYSECalendar``.
+
+    Defaults to market-always-open so existing tests are unaffected.
+    Set ``is_open=False`` to simulate a closed-market scenario.
+    """
+
+    is_open: bool = True
+
+    def is_market_open(self, ts: datetime) -> bool:  # noqa: ARG002
+        """Return ``is_open`` regardless of the timestamp."""
+        return self.is_open
+
+    def next_open(self, ts: datetime) -> datetime:
+        """Return *ts* unchanged — callers rarely need next_open in tests."""
+        return ts
+
 # ---------------------------------------------------------------------------
 # FakeMarketData
 # ---------------------------------------------------------------------------

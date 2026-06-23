@@ -50,6 +50,7 @@ from firm.config.settings import RiskPolicyConfig
 from firm.domain import Portfolio
 from firm.domain.enums import CycleOutcome, HITLStatus, Recommendation, RefusalReason
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
+from firm.services.calendar import NYSECalendar
 from firm.orchestration.state import GraphState
 from firm.persistence.ledger import LedgerRepository
 from firm.ports.evidence import EvidenceStore
@@ -83,6 +84,7 @@ class NodePorts:
     risk_policy: RiskPolicyConfig
     portfolio_id: UUID
     portfolio: Portfolio
+    calendar: NYSECalendar
 
 
 # ---------------------------------------------------------------------------
@@ -311,11 +313,28 @@ def _build_approved_from_hitl(
 
 
 def make_execution_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
-    """Return an ``execution_node`` closed over injected ports."""
+    """Return an ``execution_node`` closed over injected ports.
+
+    The fill is gated by NYSE market hours: if ``decision_ts`` falls outside
+    regular trading hours (weekend, holiday, before-open, after-close,
+    half-day past early close) the node returns
+    ``CycleOutcome.REJECTED_MARKET_CLOSED`` without writing to the ledger.
+    Research and decision nodes are unaffected — only the fill is gated.
+    """
     agent = ExecutionAgent(ledger=ports.ledger, guardrail=ports.guardrail)
 
     def execution_node(state: GraphState) -> dict[str, Any]:
         from firm.agents.execution import Fill
+
+        decision_ts_str = state.get("decision_ts", "")
+        decision_ts = _parse_datetime(decision_ts_str)
+        if not ports.calendar.is_market_open(decision_ts):
+            logger.info(
+                "Execution blocked: market closed at %s (correlation_id=%s)",
+                decision_ts.isoformat(),
+                state.get("correlation_id", ""),
+            )
+            return {"cycle_outcome": CycleOutcome.REJECTED_MARKET_CLOSED}
 
         approved_raw = state.get("approved_trade")
         if approved_raw is None:

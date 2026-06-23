@@ -99,7 +99,7 @@ def test_hitl_timeout_fails_safe() -> None:
     from langgraph.graph import StateGraph
     from langgraph.types import Command
 
-    from firm.adapters.fakes import FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
+    from firm.adapters.fakes import FakeCalendar, FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
     from firm.config.settings import RiskPolicyConfig
     from firm.domain import Portfolio, RiskPolicy
     from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
@@ -137,6 +137,7 @@ def test_hitl_timeout_fails_safe() -> None:
         risk_policy=risk_policy,
         portfolio_id=uuid.uuid4(),
         portfolio=Portfolio(cash=Decimal("10000")),
+        calendar=FakeCalendar(is_open=True),
     )
     risk_fn = make_risk_node(ports)
 

@@ -265,10 +265,13 @@ def _build_pipeline(root: Path, initial_cash: Any) -> tuple[Any, Any, Any]:
     """
     from langgraph.checkpoint.memory import MemorySaver
 
+    from firm.adapters.llm_token_budget import TokenBudgetLLM
     from firm.adapters.market_data_frozen import FrozenMarketData
     from firm.adapters.report import ExcelReportSink, MultiReportSink, SlackReportSink
+    from firm.domain.guardrails import TokenBudgetCircuitBreaker
     from firm.orchestration.graph import build_graph
     from firm.orchestration.nodes import NodePorts
+    from firm.services.calendar import NYSECalendar
 
     risk_policy_config = _safe_load_risk_policy(root)
     portfolio, portfolio_id, guardrail, injection_guard, ledger = _build_domain_objects(
@@ -276,7 +279,6 @@ def _build_pipeline(root: Path, initial_cash: Any) -> tuple[Any, Any, Any]:
     )
     market_data = FrozenMarketData(root / "data" / "bars")
     evidence_store = _build_evidence_store(root / "data" / "news" / "corpus.json")
-    llm = _build_demo_llm(root / "data" / "cassettes" / "eval.jsonl")
     reports_dir = root / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
 
@@ -287,6 +289,14 @@ def _build_pipeline(root: Path, initial_cash: Any) -> tuple[Any, Any, Any]:
             ExcelReportSink(output_dir=reports_dir),
             SlackReportSink(channel=os.getenv("SLACK_CHANNEL", "#trading-desk")),
         ]
+    )
+
+    raw_llm = _build_demo_llm(root / "data" / "cassettes" / "eval.jsonl")
+    llm = TokenBudgetLLM(
+        inner=raw_llm,
+        breaker=TokenBudgetCircuitBreaker(),
+        budget=risk_policy_config.token_budget_per_cycle,
+        report_sink=report_sink,
     )
 
     ports = NodePorts(
@@ -300,6 +310,7 @@ def _build_pipeline(root: Path, initial_cash: Any) -> tuple[Any, Any, Any]:
         risk_policy=risk_policy_config,
         portfolio_id=portfolio_id,
         portfolio=portfolio,
+        calendar=NYSECalendar(),
     )
     graph = build_graph(checkpointer=MemorySaver(), ports=ports)
     return graph, portfolio, portfolio_id
@@ -338,6 +349,8 @@ def _invoke_one_symbol(
     """Run one graph cycle for *symbol*, emitting cycle_start + cycle_done/error."""
     import uuid
 
+    from firm.observability.tracing import reset_correlation_id, set_correlation_id
+
     correlation_id = str(uuid.uuid4())
     _emit(
         {
@@ -347,54 +360,60 @@ def _invoke_one_symbol(
             "correlation_id": correlation_id,
         }
     )
-    initial_state = {
-        "symbol": symbol,
-        "decision_ts": decision_ts.isoformat(),
-        "correlation_id": correlation_id,
-    }
-    config: dict[str, Any] = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    # Propagate the correlation_id into the tracing context var so that the
+    # TokenBudgetLLM wrapper can key token consumption to this cycle.
+    token = set_correlation_id(correlation_id)
     try:
-        from langfuse.decorators import langfuse_context, observe
+        initial_state = {
+            "symbol": symbol,
+            "decision_ts": decision_ts.isoformat(),
+            "correlation_id": correlation_id,
+        }
+        config: dict[str, Any] = {"configurable": {"thread_id": str(uuid.uuid4())}}
+        try:
+            from langfuse.decorators import langfuse_context, observe
 
-        @observe(name=f"decision_cycle.{symbol}")  # type: ignore[untyped-decorator]
-        def _traced_cycle() -> None:
-            langfuse_context.update_current_observation(
-                input={"symbol": symbol, "decision_ts": decision_ts.isoformat()},
-                metadata={"correlation_id": correlation_id},
-            )
+            @observe(name=f"decision_cycle.{symbol}")  # type: ignore[untyped-decorator]
+            def _traced_cycle() -> None:
+                langfuse_context.update_current_observation(
+                    input={"symbol": symbol, "decision_ts": decision_ts.isoformat()},
+                    metadata={"correlation_id": correlation_id},
+                )
+                try:
+                    final_state: dict[str, Any] = graph.invoke(initial_state, config=config)
+                    outcome = final_state.get("cycle_outcome", "unknown")
+                    langfuse_context.update_current_observation(output={"outcome": outcome})
+                    _emit_cycle_done(symbol, correlation_id, final_state)
+                except Exception as exc:
+                    langfuse_context.update_current_observation(level="ERROR", status_message=str(exc))
+                    _emit(
+                        {
+                            "event": "cycle_error",
+                            "symbol": symbol,
+                            "correlation_id": correlation_id,
+                            "error": str(exc),
+                        }
+                    )
+
+            _traced_cycle()
+        except ImportError as exc:
+            import logging
+
+            logging.getLogger(__name__).warning("Langfuse unavailable, running untraced: %s", exc)
             try:
-                final_state: dict[str, Any] = graph.invoke(initial_state, config=config)
-                outcome = final_state.get("cycle_outcome", "unknown")
-                langfuse_context.update_current_observation(output={"outcome": outcome})
+                final_state = graph.invoke(initial_state, config=config)
                 _emit_cycle_done(symbol, correlation_id, final_state)
-            except Exception as exc:
-                langfuse_context.update_current_observation(level="ERROR", status_message=str(exc))
+            except Exception as graph_exc:
                 _emit(
                     {
                         "event": "cycle_error",
                         "symbol": symbol,
                         "correlation_id": correlation_id,
-                        "error": str(exc),
+                        "error": str(graph_exc),
                     }
                 )
-
-        _traced_cycle()
-    except ImportError as exc:
-        import logging
-
-        logging.getLogger(__name__).warning("Langfuse unavailable, running untraced: %s", exc)
-        try:
-            final_state = graph.invoke(initial_state, config=config)
-            _emit_cycle_done(symbol, correlation_id, final_state)
-        except Exception as graph_exc:
-            _emit(
-                {
-                    "event": "cycle_error",
-                    "symbol": symbol,
-                    "correlation_id": correlation_id,
-                    "error": str(graph_exc),
-                }
-            )
+    finally:
+        reset_correlation_id(token)
 
 
 def _run_graph_loop(

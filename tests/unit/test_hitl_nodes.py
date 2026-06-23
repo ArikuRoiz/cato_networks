@@ -21,7 +21,7 @@ from decimal import Decimal
 
 from langgraph.checkpoint.memory import MemorySaver
 
-from firm.adapters.fakes import FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
+from firm.adapters.fakes import FakeCalendar, FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
 from firm.config.settings import RiskPolicyConfig
 from firm.domain import Portfolio, RiskPolicy
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
@@ -53,6 +53,7 @@ def _make_ports(risk_policy: RiskPolicyConfig) -> NodePorts:
         risk_policy=risk_policy,
         portfolio_id=uuid.uuid4(),
         portfolio=Portfolio(cash=Decimal("10000")),
+        calendar=FakeCalendar(is_open=True),
     )
 
 
@@ -291,3 +292,153 @@ def test_risk_node_above_threshold_interrupts() -> None:
     interrupt_events = [e for e in events if "__interrupt__" in e]
     assert interrupt_events, "notional above threshold must trigger HITL interrupt"
     assert interrupt_events[-1]["__interrupt__"][0].value["type"] == "hitl_request"
+
+
+# ---------------------------------------------------------------------------
+# Closed-market gate — execution node must not produce a fill (R5 §1)
+# ---------------------------------------------------------------------------
+
+
+def test_execution_node_closed_market_produces_no_fill() -> None:
+    """A cycle with an approved trade but a closed-market decision_ts yields no fill.
+
+    The execution node must gate on NYSE market hours: when the decision_ts
+    falls outside regular trading hours the node must return
+    ``cycle_outcome='rejected_market_closed'`` without touching the ledger.
+
+    Requirement: R5 §1 — NYSE market-hours gating.
+    """
+    from firm.domain.enums import CycleOutcome
+    from firm.orchestration.nodes import make_execution_node
+
+    policy = _make_risk_policy()
+    # closed_market=True means is_open=False → every is_market_open() call returns False
+    ports_closed = _make_ports(policy)
+    # Replace the always-open calendar with a closed one
+    import dataclasses
+
+    ports_closed = dataclasses.replace(ports_closed, calendar=FakeCalendar(is_open=False))
+
+    execution_fn = make_execution_node(ports_closed)
+
+    # Build a state with a valid approved_trade and a weekend decision_ts.
+    # 2024-10-26 is a Saturday — closed even without the fake.
+    closed_state = GraphState(
+        correlation_id=str(uuid.uuid4()),
+        trigger_type="scheduled",
+        symbol="NVDA",
+        decision_ts="2024-10-26T11:00:00+00:00",  # Saturday
+        evidence=None,
+        trade_proposal=None,
+        approved_trade={
+            "trade": {
+                "id": str(uuid.uuid4()),
+                "cycle_id": str(uuid.uuid4()),
+                "symbol": "NVDA",
+                "side": "buy",
+                "qty": "10",
+                "status": "proposed",
+                "requested_price": "100",
+                "fill_price": None,
+                "slippage": None,
+                "commission": None,
+                "idempotency_key": "test-key",
+            },
+            "correlation_id": "test-cid",
+        },
+        hitl_status=None,
+        cycle_outcome=None,
+        error=None,
+        token_count=0,
+    )
+
+    result = execution_fn(closed_state)
+
+    assert result.get("cycle_outcome") == CycleOutcome.REJECTED_MARKET_CLOSED, (
+        f"Expected rejected_market_closed, got {result.get('cycle_outcome')!r}"
+    )
+    # Ledger is None — if execution had proceeded it would have raised AttributeError.
+    # Getting here means no ledger write was attempted.
+
+
+# ---------------------------------------------------------------------------
+# Token-budget wrapper — LLMError returned when budget exceeded (R5 §2)
+# ---------------------------------------------------------------------------
+
+
+def test_token_budget_llm_returns_error_when_over_budget() -> None:
+    """Once the per-cycle token budget is exceeded the wrapper returns LLMError.
+
+    Steps:
+    1. Create a TokenBudgetLLM with a tight budget (100 tokens).
+    2. Set the tracing context var to a known correlation_id.
+    3. Record tokens that exceed the budget.
+    4. The next complete() call must return LLMError without touching the inner LLM.
+    5. The breaker total must reflect only the tokens recorded in step 3.
+
+    Requirement: R5 §2 — token-budget circuit breaker.
+    """
+    from firm.adapters.llm_token_budget import TokenBudgetLLM
+    from firm.domain.guardrails import TokenBudgetCircuitBreaker
+    from firm.observability.tracing import reset_correlation_id, set_correlation_id
+    from firm.ports.types import LLMError, LLMMessage, LLMResponse
+
+    cid = "test-cycle-budget-" + str(uuid.uuid4())
+    token = set_correlation_id(cid)
+    try:
+        breaker = TokenBudgetCircuitBreaker()
+        budget = 100
+
+        canned = LLMResponse(content="ok", input_tokens=10, output_tokens=5, model="fake")
+        inner = FakeLLM(responses=[canned] * 10)
+        sink = FakeReportSink()
+
+        wrapper = TokenBudgetLLM(inner=inner, breaker=breaker, budget=budget, report_sink=sink)
+
+        # Record tokens exceeding the budget before the first call.
+        breaker.record_tokens(cid, 150)  # 150 > 100
+
+        result = wrapper.complete(
+            messages=[LLMMessage(role="user", content="hello")],
+            model="claude-haiku-4-5",
+            max_tokens=256,
+        )
+
+        assert isinstance(result, LLMError), (
+            f"Expected LLMError when over budget, got {type(result).__name__!r}"
+        )
+        assert "token budget exceeded" in result.message
+        # Breaker total must still be 150 (no new tokens from the blocked call).
+        assert breaker.get_total(cid) == 150
+        # An alert must have been sent.
+        assert len(sink.alerts) == 1
+        assert cid in sink.alerts[0][0] or cid in sink.alerts[0][1]
+    finally:
+        reset_correlation_id(token)
+
+
+def test_token_budget_llm_records_tokens_on_success() -> None:
+    """Tokens from a successful call are recorded in the breaker."""
+    from firm.adapters.llm_token_budget import TokenBudgetLLM
+    from firm.domain.guardrails import TokenBudgetCircuitBreaker
+    from firm.observability.tracing import reset_correlation_id, set_correlation_id
+    from firm.ports.types import LLMMessage, LLMResponse
+
+    cid = "test-cycle-record-" + str(uuid.uuid4())
+    token = set_correlation_id(cid)
+    try:
+        breaker = TokenBudgetCircuitBreaker()
+        canned = LLMResponse(content="ok", input_tokens=30, output_tokens=20, model="fake")
+        inner = FakeLLM(responses=[canned])
+
+        wrapper = TokenBudgetLLM(inner=inner, breaker=breaker, budget=50_000)
+
+        wrapper.complete(
+            messages=[LLMMessage(role="user", content="hello")],
+            model="claude-haiku-4-5",
+            max_tokens=256,
+        )
+
+        assert breaker.get_total(cid) == 50  # 30 + 20
+    finally:
+        reset_correlation_id(token)

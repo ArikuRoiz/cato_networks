@@ -23,6 +23,7 @@ class CycleOutcome(StrEnum):
     FILLED = "filled"
     REJECTED = "rejected"
     REJECTED_TIMEOUT = "rejected_timeout"
+    REJECTED_MARKET_CLOSED = "rejected_market_closed"
     HOLD = "hold"
     ERROR = "error"
 
