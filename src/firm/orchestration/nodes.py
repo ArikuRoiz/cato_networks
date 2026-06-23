@@ -401,7 +401,19 @@ def make_execution_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
 
 
 def make_reporting_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
-    """Return a ``reporting_node`` closed over injected ports."""
+    """Return a ``reporting_node`` closed over injected ports.
+
+    Price collection:
+        For each symbol held in the portfolio, the current bar's close price is
+        fetched from ``ports.market_data`` at ``decision_ts``.  If a bar is
+        unavailable (e.g. non-trading day), avg_cost is used as a fallback
+        inside the agent — the node does not gate on price availability.
+
+        SPY prices are fetched for the benchmark calculation:
+          - ``prices["SPY"]``      — report-date close
+          - ``prices["SPY_PREV"]`` — previous calendar-day close (the last bar
+            before the report date's midnight boundary); used only when present.
+    """
     agent = ReportingAgent(report_sink=ports.report_sink, ledger=ports.ledger)
 
     def reporting_node(state: GraphState) -> dict[str, Any]:
@@ -410,12 +422,17 @@ def make_reporting_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
         correlation_id = state.get("correlation_id", "")
         decision_ts_str = state.get("decision_ts", "")
         decision_ts = _parse_datetime(decision_ts_str)
+        report_date = decision_ts.date()
         cycle_id = str_to_uuid(correlation_id)
+
+        prices = _fetch_report_prices(ports, decision_ts)
+
         inp = ReportingInput(
             cycle_id=cycle_id,
             portfolio_id=ports.portfolio_id,
-            report_date=decision_ts.date(),
+            report_date=report_date,
             correlation_id=correlation_id,
+            prices=prices,
         )
         result = agent.run(inp)
         outcome = state.get("cycle_outcome", CycleOutcome.FILLED)
@@ -424,6 +441,36 @@ def make_reporting_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
         return {"cycle_outcome": outcome}
 
     return reporting_node
+
+
+def _fetch_report_prices(ports: NodePorts, decision_ts: datetime) -> dict[str, Decimal]:
+    """Fetch current-bar close prices for all held symbols plus SPY benchmark.
+
+    Never raises — missing bars are silently omitted so the agent can fall back
+    to avg_cost for any symbol whose bar is unavailable.
+    """
+    from datetime import timedelta
+
+    prices: dict[str, Decimal] = {}
+
+    # Holdings
+    for symbol in ports.portfolio.holdings:
+        bar = ports.market_data.get_bar(symbol, decision_ts)
+        if bar is not None:
+            prices[symbol] = bar.close
+
+    # SPY today (report date)
+    spy_bar = ports.market_data.get_bar("SPY", decision_ts)
+    if spy_bar is not None:
+        prices["SPY"] = spy_bar.close
+
+    # SPY previous trading day (for benchmark return calculation)
+    prev_ts = decision_ts - timedelta(days=1)
+    spy_prev_bar = ports.market_data.get_bar("SPY", prev_ts)
+    if spy_prev_bar is not None:
+        prices["SPY_PREV"] = spy_prev_bar.close
+
+    return prices
 
 
 # ---------------------------------------------------------------------------
