@@ -5,6 +5,66 @@
 
 ---
 
+## 0. Running the live production mode
+
+### Prerequisites
+
+```bash
+# 1. Copy and edit .env — set at minimum:
+#    ANTHROPIC_API_KEY=sk-ant-...
+#    DATABASE_URL=postgresql://firm:firm@localhost:5432/firm  (or Docker service name)
+cp .env.example .env
+
+# 2. Start Postgres + pgvector
+make up
+
+# 3. Apply migrations and embed news corpus
+make seed
+```
+
+### Run a single analysis cycle
+
+```bash
+# Analyse two tickers, pulling 7 days of market data and news:
+firm run --tickers NVDA,AAPL --lookback-days 7
+
+# Use the default watchlist (AAPL, MSFT, NVDA, GOOGL, META, AMD):
+firm run
+
+# Custom lookback:
+firm run --tickers MSFT --lookback-days 14
+```
+
+Output is NDJSON streamed to stdout (`run_start`, `news_ingestion`, one
+`cycle_start` / `cycle_done` per ticker, `run_done`).  Excel reports are
+written to `reports/` and, when `SLACK_BOT_TOKEN` is set, a Block Kit message
+is sent to `SLACK_CHANNEL`.
+
+### HITL (human-in-the-loop) approval
+
+When a proposed trade exceeds 5% of NAV the graph halts and prompts the
+operator on the console:
+
+```
+[HITL] Trade requires human approval for NVDA
+  Proposal: {...}
+  Options: [a]pprove  [r]eject  [e]dit <qty>
+Decision >
+```
+
+Type `a` to approve, `r` to reject, or `e 50` to approve with an edited
+quantity of 50 shares.  Unrecognised input defaults to rejection (safe).
+The decision is durably recorded in the `approvals` and `audit_log` tables
+via the existing `record_approval` path so the full audit trail is intact.
+
+### Durable checkpointing
+
+`firm run` uses a `PostgresSaver` checkpointer.  If the process crashes during
+a cycle the graph state is preserved in the `checkpoints` table and can be
+resumed (see §3 below).
+
+---
+
 ## 1. Restart after crash
 
 The application stores all durable state in Postgres. LangGraph checkpoints are written

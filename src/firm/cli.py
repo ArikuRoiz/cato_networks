@@ -9,6 +9,10 @@ demo   -- Run one full replay day (Oct 23 2024, NVDA earnings day) against
           to stdout in NDJSON format.
 dev    -- Start the scheduler + event listener in a foreground loop against
           frozen data. Use for local development with hot-reload.
+run    -- LIVE production run: pull real market data + news for the last N
+          days, run the 11-node graph against Postgres, and write a daily
+          report. Requires Docker (make up), make seed, and a .env with
+          ANTHROPIC_API_KEY + DATABASE_URL.
 trace  -- Print the audit log for a single trade from the database,
           identified by --trade-id (UUID). Outputs NDJSON to stdout.
 
@@ -519,6 +523,340 @@ def _cmd_dev(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# run command (LIVE production)
+# ---------------------------------------------------------------------------
+
+# Default watchlist mirrors the demo watchlist.
+_DEFAULT_WATCHLIST: list[str] = ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMD"]
+_DEFAULT_LOOKBACK_DAYS: int = 7
+
+
+def _cmd_run(args: argparse.Namespace) -> None:
+    """Live production run: real market data + news + Postgres + live LLM.
+
+    Prerequisites (not met in offline CI):
+      - ``make up``   — Postgres + pgvector running in Docker.
+      - ``make seed`` — migrations applied, tables exist.
+      - ``.env``      — ANTHROPIC_API_KEY and DATABASE_URL set.
+    """
+    from decimal import Decimal
+
+    root = _project_root()
+    tickers = _parse_tickers(args.tickers)
+    lookback_days: int = args.lookback_days
+
+    _emit(
+        {
+            "event": "run_start",
+            "tickers": tickers,
+            "lookback_days": lookback_days,
+            "ts": datetime.now(tz=UTC).isoformat(),
+        }
+    )
+
+    settings = _load_settings()
+    _validate_live_settings(settings)
+
+    _ingest_live_news(tickers, lookback_days, settings)
+
+    graph, _portfolio, _portfolio_id = _build_live_pipeline(root, Decimal("100000"), settings)
+    decision_ts = datetime.now(tz=UTC)
+    _run_live_graph_loop(graph, tickers, decision_ts, settings)
+
+    _emit({"event": "run_done", "ts": datetime.now(tz=UTC).isoformat()})
+
+
+def _parse_tickers(tickers_arg: str | None) -> list[str]:
+    """Parse comma-separated tickers from CLI arg; fall back to default watchlist."""
+    if not tickers_arg:
+        return _DEFAULT_WATCHLIST
+    return [t.strip().upper() for t in tickers_arg.split(",") if t.strip()]
+
+
+def _validate_live_settings(settings: Settings) -> None:
+    """Raise SystemExit with a clear message when required env vars are missing."""
+    if not settings.has_anthropic_key:
+        raise SystemExit(
+            "ANTHROPIC_API_KEY is not set. "
+            "Add it to .env or export it before running 'firm run'."
+        )
+
+
+def _ingest_live_news(tickers: list[str], lookback_days: int, settings: Settings) -> None:
+    """Fetch recent headlines for *tickers* and upsert them into pgvector.
+
+    On failure (yfinance error, DB connectivity, etc.) a warning is emitted and
+    the run continues — stale evidence is better than aborting the entire cycle.
+    """
+    import uuid
+
+    import psycopg
+
+    from firm.adapters.evidence_pgvector import PgvectorEvidenceStore
+    from firm.agents.news_ingestion import NewsIngestionAgent
+    from firm.agents.news_ingestion.schemas import NewsIngestionInput
+    from firm.orchestration.checkpointer import _normalise_database_url
+
+    _emit({"event": "news_ingestion", "status": "starting", "tickers": tickers})
+    try:
+        url = _normalise_database_url(settings.database_url)
+        with psycopg.connect(url) as conn:
+            store = PgvectorEvidenceStore(conn)
+            agent = NewsIngestionAgent(evidence=store)
+            inp = NewsIngestionInput(
+                symbols=tickers,
+                lookback_hours=lookback_days * 24,
+                correlation_id=str(uuid.uuid4()),
+            )
+            result = agent.run(inp)
+            conn.commit()
+        _emit({"event": "news_ingestion", "status": "ok", "result": result.model_dump()})
+    except Exception as exc:
+        _emit({"event": "news_ingestion", "status": "warning", "error": str(exc)})
+
+
+def _build_live_pipeline(
+    root: Path,
+    initial_cash: Any,
+    settings: Settings,
+) -> tuple[Any, Any, Any]:
+    """Wire all live adapters + LangGraph graph for the production run command.
+
+    Returns (graph, portfolio, portfolio_id).
+    """
+    import psycopg
+
+    from firm.adapters.evidence_pgvector import PgvectorEvidenceStore
+    from firm.adapters.llm_anthropic import AnthropicLLM
+    from firm.adapters.llm_offline import GracefulLLM
+    from firm.adapters.llm_token_budget import TokenBudgetLLM
+    from firm.adapters.market_data_live import LiveMarketData
+    from firm.adapters.report import ExcelReportSink, MultiReportSink, SlackReportSink
+    from firm.domain.guardrails import TokenBudgetCircuitBreaker
+    from firm.orchestration.checkpointer import _normalise_database_url, setup_checkpointer
+    from firm.orchestration.graph import build_graph
+    from firm.orchestration.nodes import NodePorts
+    from firm.services.calendar import NYSECalendar
+
+    risk_policy_config = _safe_load_risk_policy(root)
+    portfolio, portfolio_id, guardrail, injection_guard, ledger = _build_live_domain_objects(
+        risk_policy_config, initial_cash, settings
+    )
+
+    live_url = _normalise_database_url(settings.database_url)
+    evidence_conn = psycopg.connect(live_url)  # kept open for the run lifetime
+    evidence_store = PgvectorEvidenceStore(evidence_conn)
+
+    reports_dir = root / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report_sink = MultiReportSink(
+        sinks=[
+            ExcelReportSink(output_dir=reports_dir),
+            SlackReportSink(channel=settings.slack_channel),
+        ]
+    )
+
+    raw_llm = GracefulLLM(AnthropicLLM(api_key=settings.anthropic_api_key))
+    llm = TokenBudgetLLM(
+        inner=raw_llm,
+        breaker=TokenBudgetCircuitBreaker(),
+        budget=risk_policy_config.token_budget_per_cycle,
+        report_sink=report_sink,
+    )
+
+    # PostgresSaver gives durable HITL: graph state survives process restarts.
+    pg_conn = psycopg.connect(  # pyright: ignore[reportArgumentType]
+        live_url,
+        autocommit=True,
+        prepare_threshold=0,
+        row_factory=__import__("psycopg.rows", fromlist=["dict_row"]).dict_row,
+    )
+    checkpointer = setup_checkpointer(pg_conn)
+
+    ports = NodePorts(
+        evidence=evidence_store,
+        llm=llm,
+        market_data=LiveMarketData(),
+        ledger=ledger,
+        report_sink=report_sink,
+        guardrail=guardrail,
+        injection_guard=injection_guard,
+        risk_policy=risk_policy_config,
+        portfolio_id=portfolio_id,
+        portfolio=portfolio,
+        calendar=NYSECalendar(),
+    )
+    graph = build_graph(checkpointer=checkpointer, ports=ports)
+    return graph, portfolio, portfolio_id
+
+
+def _build_live_domain_objects(
+    risk_policy_config: RiskPolicyConfig,
+    initial_cash: Any,
+    settings: Settings,
+) -> tuple[Any, Any, Any, Any, Any]:
+    """Construct Portfolio, RiskPolicy, guards, and the real Postgres LedgerRepository.
+
+    Returns (portfolio, portfolio_id, guardrail, injection_guard, ledger).
+    """
+    import uuid
+    from decimal import Decimal
+
+    from sqlalchemy import create_engine
+
+    from firm.domain import Portfolio, RiskPolicy
+    from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
+    from firm.persistence.ledger import LedgerRepository
+
+    portfolio_id = uuid.uuid4()
+    portfolio = Portfolio(cash=Decimal(str(initial_cash)))
+    domain_policy = RiskPolicy(
+        max_trade_notional_pct=Decimal(str(risk_policy_config.max_trade_notional_pct)),
+        max_name_concentration_pct=Decimal(str(risk_policy_config.max_name_concentration_pct)),
+        daily_loss_halt_pct=Decimal(str(risk_policy_config.daily_loss_halt_pct)),
+        hitl_threshold_pct=Decimal(str(risk_policy_config.hitl_threshold_pct)),
+    )
+    guardrail = LedgerGuardrail(domain_policy)
+    injection_guard = InjectionGuard()
+    engine = create_engine(settings.database_url)
+    ledger = LedgerRepository(engine)
+    return portfolio, portfolio_id, guardrail, injection_guard, ledger
+
+
+def _run_live_graph_loop(
+    graph: Any,
+    tickers: list[str],
+    decision_ts: datetime,
+    settings: Settings,
+) -> None:
+    """Invoke the graph once per ticker, handling HITL interrupts via console input."""
+    for symbol in tickers:
+        _invoke_live_symbol(graph, symbol, decision_ts, settings)
+
+
+def _invoke_live_symbol(
+    graph: Any,
+    symbol: str,
+    decision_ts: datetime,
+    settings: Settings,
+) -> None:
+    """Stream the graph for one symbol; block on HITL interrupts for console approval."""
+    import uuid
+
+    from langgraph.types import Command
+
+    from firm.observability.tracing import reset_correlation_id, set_correlation_id
+
+    correlation_id = str(uuid.uuid4())
+    thread_id = str(uuid.uuid4())
+    _emit(
+        {
+            "event": "cycle_start",
+            "symbol": symbol,
+            "decision_ts": decision_ts.isoformat(),
+            "correlation_id": correlation_id,
+        }
+    )
+    token = set_correlation_id(correlation_id)
+    try:
+        initial_state = {
+            "symbol": symbol,
+            "decision_ts": decision_ts.isoformat(),
+            "correlation_id": correlation_id,
+        }
+        config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+
+        # Stream events; stop on the first interrupt or when the graph ends.
+        final_state: dict[str, Any] = {}
+        while True:
+            interrupted = False
+            interrupt_payload: dict[str, Any] = {}
+            for event in graph.stream(initial_state, config=config, stream_mode="values"):
+                final_state = event
+            # Check whether the graph halted on an interrupt by querying state.
+            run_state = graph.get_state(config)
+            if run_state.next and run_state.tasks:
+                for task in run_state.tasks:
+                    if getattr(task, "interrupts", None):
+                        interrupted = True
+                        interrupt_payload = task.interrupts[0].value if task.interrupts else {}
+                        break
+
+            if not interrupted:
+                break
+
+            # Console HITL: block until the operator responds.
+            resume_value, hitl_status = _console_hitl_prompt(symbol, interrupt_payload)
+            # Resume the graph with the operator decision.
+            # Command is typed generically; cast to Any so we can pass it
+            # to graph.stream() which accepts Any input after an interrupt.
+            resume_cmd: Any = Command(
+                resume=resume_value,
+                update={"hitl_status": hitl_status},
+            )
+            # Re-invoke with the command directly (LangGraph resumes from checkpoint).
+            for event in graph.stream(resume_cmd, config=config, stream_mode="values"):
+                final_state = event
+            break  # single HITL per cycle
+
+        _emit_cycle_done(symbol, correlation_id, final_state)
+    except Exception as exc:
+        _emit(
+            {
+                "event": "cycle_error",
+                "symbol": symbol,
+                "correlation_id": correlation_id,
+                "error": str(exc),
+            }
+        )
+    finally:
+        reset_correlation_id(token)
+
+
+def _console_hitl_prompt(
+    symbol: str,
+    payload: dict[str, Any],
+) -> tuple[str, str]:
+    """Block on console input for a HITL decision; return (resume_value, hitl_status).
+
+    Accepted responses: approve / a, reject / r, edit <qty> / e <qty>.
+    Any unrecognised input defaults to rejection for safety.
+    """
+
+    proposal = payload.get("trade_proposal", {})
+    print(
+        f"\n[HITL] Trade requires human approval for {symbol}\n"
+        f"  Proposal: {proposal}\n"
+        "  Options: [a]pprove  [r]eject  [e]dit <qty>",
+        flush=True,
+    )
+    try:
+        raw = input("Decision > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        raw = "r"
+
+    return _parse_hitl_response(raw)
+
+
+def _parse_hitl_response(raw: str) -> tuple[str, str]:
+    """Parse a raw HITL response string into (resume_value, hitl_status).
+
+    Defaults to rejection on any unrecognised input so that ambiguity is safe.
+    """
+    from firm.domain.enums import HITLStatus
+
+    if raw in {"a", "approve"}:
+        return ("approved", HITLStatus.APPROVED)
+    if raw in {"r", "reject"}:
+        return ("rejected", HITLStatus.REJECTED)
+    if raw.startswith(("e ", "edit ")):
+        qty_str = raw.split(maxsplit=1)[1] if " " in raw else ""
+        if qty_str.replace(".", "").isdigit():
+            return (f"edit:{qty_str}", HITLStatus.APPROVED)
+    return ("rejected", HITLStatus.REJECTED)
+
+
+# ---------------------------------------------------------------------------
 # trace command
 # ---------------------------------------------------------------------------
 
@@ -627,6 +965,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_seed_subcommand(sub)
     _add_demo_subcommand(sub)
     _add_dev_subcommand(sub)
+    _add_run_subcommand(sub)
     _add_trace_subcommand(sub)
     return parser
 
@@ -664,6 +1003,35 @@ def _add_dev_subcommand(sub: Any) -> None:
     )
 
 
+def _add_run_subcommand(sub: Any) -> None:
+    """Register the 'run' subcommand (live production mode)."""
+    run_p = sub.add_parser(
+        "run",
+        help=(
+            "LIVE production run: fetch real market data + news, run the 11-node graph "
+            "against Postgres, and write a daily report. "
+            "Requires: make up, make seed, ANTHROPIC_API_KEY in .env."
+        ),
+    )
+    run_p.add_argument(
+        "--tickers",
+        default=None,
+        metavar="TICKER,TICKER,...",
+        help=(
+            "Comma-separated list of tickers to analyse "
+            f"(default: {','.join(_DEFAULT_WATCHLIST)})."
+        ),
+    )
+    run_p.add_argument(
+        "--lookback-days",
+        type=int,
+        default=_DEFAULT_LOOKBACK_DAYS,
+        dest="lookback_days",
+        metavar="N",
+        help=f"Number of calendar days of market data + news to pull (default: {_DEFAULT_LOOKBACK_DAYS}).",
+    )
+
+
 def _add_trace_subcommand(sub: Any) -> None:
     """Register the 'trace' subcommand."""
     trace_p = sub.add_parser(
@@ -696,6 +1064,7 @@ def main() -> None:
         "seed": _cmd_seed,
         "demo": _cmd_demo,
         "dev": _cmd_dev,
+        "run": _cmd_run,
         "trace": _cmd_trace,
     }
     dispatch[args.command](args)

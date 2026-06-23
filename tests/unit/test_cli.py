@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from firm.cli import _build_parser, _safe_load_risk_policy
+from firm.cli import _build_parser, _parse_hitl_response, _parse_tickers, _safe_load_risk_policy
 from firm.config.settings import RiskPolicyConfig
 
 # ---------------------------------------------------------------------------
@@ -42,6 +42,27 @@ class TestBuildParser:
         args = parser.parse_args(["dev"])
         assert args.command == "dev"
 
+    def test_run_subcommand_registered(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["run"])
+        assert args.command == "run"
+
+    def test_run_defaults(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["run"])
+        assert args.tickers is None
+        assert args.lookback_days == 7
+
+    def test_run_accepts_tickers(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["run", "--tickers", "NVDA,AAPL"])
+        assert args.tickers == "NVDA,AAPL"
+
+    def test_run_accepts_lookback_days(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["run", "--lookback-days", "14"])
+        assert args.lookback_days == 14
+
     def test_trace_requires_trade_id(self) -> None:
         parser = _build_parser()
         with pytest.raises(SystemExit):
@@ -62,6 +83,101 @@ class TestBuildParser:
         parser = _build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args([])
+
+
+# ---------------------------------------------------------------------------
+# _parse_tickers — comma-separated ticker parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParseTickers:
+    def test_none_returns_default_watchlist(self) -> None:
+        from firm.cli import _DEFAULT_WATCHLIST
+
+        result = _parse_tickers(None)
+        assert result == _DEFAULT_WATCHLIST
+
+    def test_single_ticker_uppercased(self) -> None:
+        result = _parse_tickers("nvda")
+        assert result == ["NVDA"]
+
+    def test_comma_separated_tickers(self) -> None:
+        result = _parse_tickers("NVDA,AAPL,MSFT")
+        assert result == ["NVDA", "AAPL", "MSFT"]
+
+    def test_strips_whitespace(self) -> None:
+        result = _parse_tickers(" NVDA , AAPL ")
+        assert result == ["NVDA", "AAPL"]
+
+    def test_empty_string_returns_default(self) -> None:
+        from firm.cli import _DEFAULT_WATCHLIST
+
+        # Empty string produces empty list after filtering — fall back
+        result = _parse_tickers("")
+        assert result == _DEFAULT_WATCHLIST
+
+
+# ---------------------------------------------------------------------------
+# _parse_hitl_response — HITL console decision parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParseHitlResponse:
+    def test_approve_short(self) -> None:
+        from firm.domain.enums import HITLStatus
+
+        resume, status = _parse_hitl_response("a")
+        assert resume == "approved"
+        assert status == HITLStatus.APPROVED
+
+    def test_approve_full(self) -> None:
+        from firm.domain.enums import HITLStatus
+
+        resume, status = _parse_hitl_response("approve")
+        assert resume == "approved"
+        assert status == HITLStatus.APPROVED
+
+    def test_reject_short(self) -> None:
+        from firm.domain.enums import HITLStatus
+
+        resume, status = _parse_hitl_response("r")
+        assert resume == "rejected"
+        assert status == HITLStatus.REJECTED
+
+    def test_reject_full(self) -> None:
+        from firm.domain.enums import HITLStatus
+
+        resume, status = _parse_hitl_response("reject")
+        assert resume == "rejected"
+        assert status == HITLStatus.REJECTED
+
+    def test_edit_with_integer_qty(self) -> None:
+        from firm.domain.enums import HITLStatus
+
+        resume, status = _parse_hitl_response("e 50")
+        assert resume == "edit:50"
+        assert status == HITLStatus.APPROVED
+
+    def test_edit_with_decimal_qty(self) -> None:
+        from firm.domain.enums import HITLStatus
+
+        resume, status = _parse_hitl_response("edit 12.5")
+        assert resume == "edit:12.5"
+        assert status == HITLStatus.APPROVED
+
+    def test_unknown_input_defaults_to_reject(self) -> None:
+        from firm.domain.enums import HITLStatus
+
+        resume, status = _parse_hitl_response("maybe")
+        assert resume == "rejected"
+        assert status == HITLStatus.REJECTED
+
+    def test_empty_string_defaults_to_reject(self) -> None:
+        from firm.domain.enums import HITLStatus
+
+        resume, status = _parse_hitl_response("")
+        assert resume == "rejected"
+        assert status == HITLStatus.REJECTED
 
 
 # ---------------------------------------------------------------------------

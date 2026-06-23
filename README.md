@@ -22,6 +22,20 @@ No live API needed — `make demo` replays from recorded cassettes.
 
 ---
 
+## Quick start — live production run
+
+```bash
+cp .env.example .env          # set ANTHROPIC_API_KEY + DATABASE_URL
+make up                       # Postgres + pgvector
+make seed                     # migrations + frozen data + corpus
+firm run --tickers NVDA,AAPL --lookback-days 7
+```
+
+`firm run` pulls the last 7 days of real market data and news via yfinance,
+runs the full 11-node graph for each ticker against a live Postgres ledger, and
+writes a daily Excel + Slack report.  Large trades (> 5% NAV) pause for console
+HITL approval before execution.
+
 ## Make targets
 
 | Target | Description |
