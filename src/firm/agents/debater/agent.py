@@ -6,6 +6,7 @@ from typing import Literal
 
 from firm.agents.base import BaseAgent
 from firm.agents.debater.schemas import DebaterCase, DebaterFailure, DebaterInput
+from firm.domain.enums import LLMModel
 from firm.ports.llm import LLM
 from firm.ports.types import LLMError, LLMMessage
 from firm.utils import parse_json_dict
@@ -64,7 +65,7 @@ class DebaterAgent(BaseAgent[DebaterInput, DebaterCase | DebaterFailure]):
         self._stance = stance
 
     def run(self, inp: DebaterInput) -> DebaterCase | DebaterFailure:
-        resp = self._llm.complete(_build_messages(inp), model="haiku", max_tokens=768)
+        resp = self._llm.complete(_build_messages(inp), model=LLMModel.HAIKU, max_tokens=768)
         if isinstance(resp, LLMError):
             # A transient LLM hiccup must not silently kill the debate: fall back
             # to a case built from the available technicals/evidence so the

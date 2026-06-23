@@ -1,7 +1,7 @@
 """Live Anthropic LLM adapter implementing the LLM port.
 
-Cost routing is handled by MODEL_MAP — callers pass a short alias
-("haiku", "sonnet") and the adapter resolves the full model name.
+Cost routing is handled by MODEL_MAP — callers pass an ``LLMModel`` alias
+(``HAIKU`` / ``SONNET``) and the adapter resolves the full model name.
 Unknown aliases fall through as-is, which lets tests pass synthetic
 model strings without a mapping entry.
 """
@@ -14,23 +14,24 @@ from typing import cast
 import anthropic
 from anthropic.types import MessageParam, TextBlock, ToolUseBlock
 
+from firm.domain.enums import LLMModel
 from firm.ports.llm import LLM
 from firm.ports.types import LLMError, LLMMessage, LLMResponse, ToolDef, ToolExecutors
 
 logger = logging.getLogger(__name__)
 
-# Short-name → versioned model-ID routing.
-# "haiku"  → cheap extraction model (~70 % of calls)
-# "sonnet" → strong decision model
+# Short alias → versioned model-ID routing.
+# HAIKU  → cheap extraction model (~70 % of calls)
+# SONNET → strong decision model
 MODEL_MAP: dict[str, str] = {
-    "haiku": "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
+    LLMModel.HAIKU: "claude-haiku-4-5-20251001",
+    LLMModel.SONNET: "claude-sonnet-4-6",
 }
 
 
-def _resolve_model(alias: str) -> str:
+def _resolve_model(alias: LLMModel | str) -> str:
     """Return the canonical model ID for *alias*, or *alias* unchanged."""
-    return MODEL_MAP.get(alias, alias)
+    return MODEL_MAP.get(alias, str(alias))
 
 
 def _to_api_messages(
@@ -101,7 +102,7 @@ class AnthropicLLM(LLM):
         self,
         messages: list[LLMMessage],
         *,
-        model: str,
+        model: LLMModel | str,
         max_tokens: int,
     ) -> LLMResponse | LLMError:
         resolved = _resolve_model(model)
@@ -143,7 +144,7 @@ class AnthropicLLM(LLM):
         tools: list[ToolDef],
         executors: ToolExecutors,
         *,
-        model: str,
+        model: LLMModel | str,
         max_tokens: int,
         max_rounds: int = 5,
     ) -> LLMResponse | LLMError:
@@ -257,7 +258,7 @@ class AnthropicLLM(LLM):
         self,
         messages: list[LLMMessage],
         *,
-        model: str,
+        model: LLMModel | str,
     ) -> int:
         """Return the token count for *messages* via the Anthropic token-counting API.
 

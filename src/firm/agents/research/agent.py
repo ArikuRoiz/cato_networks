@@ -13,7 +13,7 @@ from typing import Any
 
 from firm.agents.base import BaseAgent
 from firm.agents.research.schemas import Claim, Evidence, Refusal, ResearchInput
-from firm.domain.enums import RefusalReason
+from firm.domain.enums import LLMModel, RefusalReason
 from firm.domain.guardrails import InjectionDetected, InjectionGuard
 from firm.ports.evidence import EvidenceStore
 from firm.ports.llm import LLM
@@ -89,7 +89,7 @@ class ResearchAgent(BaseAgent[ResearchInput, Evidence | Refusal]):
             messages,
             tools=[_SEARCH_TOOL],
             executors={"search_news": search_news},
-            model="haiku",
+            model=LLMModel.HAIKU,
             max_tokens=1024,
             max_rounds=6,
         )

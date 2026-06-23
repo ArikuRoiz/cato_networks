@@ -34,6 +34,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from firm.constants import (
+    DEFAULT_INITIAL_CASH,
+    DEFAULT_LOOKBACK_DAYS,
+    DEFAULT_WATCHLIST,
+    DEFAULT_WEB_PORT,
+    DEV_POLL_INTERVAL_SECONDS,
+)
 from firm.ports.llm import LLM
 
 if TYPE_CHECKING:
@@ -183,11 +190,10 @@ def _parse_news_docs(corpus_path: Path) -> list[Any]:
 
 def _cmd_demo(args: argparse.Namespace) -> None:
     """Replay Oct 23 2024 (NVDA earnings day) end-to-end, print trace."""
-    from decimal import Decimal
 
     root = _project_root()
     demo_date = datetime(2024, 10, 23, tzinfo=UTC)
-    watchlist = ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMD"]
+    watchlist = list(DEFAULT_WATCHLIST)
 
     _emit(
         {
@@ -198,7 +204,7 @@ def _cmd_demo(args: argparse.Namespace) -> None:
         }
     )
 
-    graph, _portfolio, _portfolio_id = _build_pipeline(root, Decimal("100000"))
+    graph, _portfolio, _portfolio_id = _build_pipeline(root, DEFAULT_INITIAL_CASH)
     _run_graph_loop(graph, watchlist, demo_date)
     _emit({"event": "demo_done", "ts": datetime.now(tz=UTC).isoformat()})
 
@@ -459,15 +465,14 @@ def _cmd_dev(args: argparse.Namespace) -> None:
     stop.
     """
     import time
-    from decimal import Decimal
 
     root = _project_root()
-    watchlist = ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMD"]
-    poll_interval_s = 30
+    watchlist = list(DEFAULT_WATCHLIST)
+    poll_interval_s = DEV_POLL_INTERVAL_SECONDS
 
     _emit({"event": "dev_start", "watchlist": watchlist, "poll_interval_s": poll_interval_s})
 
-    graph, _portfolio, _portfolio_id = _build_pipeline(root, Decimal("100000"))
+    graph, _portfolio, _portfolio_id = _build_pipeline(root, DEFAULT_INITIAL_CASH)
     cycle_count = 0
     try:
         while True:
@@ -485,10 +490,6 @@ def _cmd_dev(args: argparse.Namespace) -> None:
 # run command (LIVE production)
 # ---------------------------------------------------------------------------
 
-# Default watchlist mirrors the demo watchlist.
-_DEFAULT_WATCHLIST: list[str] = ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMD"]
-_DEFAULT_LOOKBACK_DAYS: int = 7
-
 
 def _cmd_run(args: argparse.Namespace) -> None:
     """Live production run: real market data + news + Postgres + live LLM.
@@ -498,7 +499,6 @@ def _cmd_run(args: argparse.Namespace) -> None:
       - ``make seed`` — migrations applied, tables exist.
       - ``.env``      — ANTHROPIC_API_KEY and DATABASE_URL set.
     """
-    from decimal import Decimal
 
     root = _project_root()
     tickers = _parse_tickers(args.tickers)
@@ -522,7 +522,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
     _ingest_live_news(tickers, lookback_days, settings)
 
-    graph, _portfolio, _portfolio_id = _build_live_pipeline(root, Decimal("100000"), settings)
+    graph, _portfolio, _portfolio_id = _build_live_pipeline(root, DEFAULT_INITIAL_CASH, settings)
     decision_ts = datetime.now(tz=UTC)
     _run_live_graph_loop(graph, tickers, decision_ts, settings, hitl_channel, force_buy)
 
@@ -532,7 +532,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
 def _parse_tickers(tickers_arg: str | None) -> list[str]:
     """Parse comma-separated tickers from CLI arg; fall back to default watchlist."""
     if not tickers_arg:
-        return _DEFAULT_WATCHLIST
+        return list(DEFAULT_WATCHLIST)
     return [t.strip().upper() for t in tickers_arg.split(",") if t.strip()]
 
 
@@ -834,7 +834,6 @@ def _cmd_bot(args: argparse.Namespace) -> None:
       - ``.env``      — ANTHROPIC_API_KEY, DATABASE_URL,
                         TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
     """
-    from decimal import Decimal
 
     root = _project_root()
     settings = _load_settings()
@@ -848,7 +847,7 @@ def _cmd_bot(args: argparse.Namespace) -> None:
         }
     )
 
-    graph, _portfolio, _portfolio_id = _build_live_pipeline(root, Decimal("100000"), settings)
+    graph, _portfolio, _portfolio_id = _build_live_pipeline(root, DEFAULT_INITIAL_CASH, settings)
 
     from firm.bot.service import build_bot_service
 
@@ -1049,16 +1048,16 @@ def _add_run_subcommand(sub: Any) -> None:
         default=None,
         metavar="TICKER,TICKER,...",
         help=(
-            f"Comma-separated list of tickers to analyse (default: {','.join(_DEFAULT_WATCHLIST)})."
+            f"Comma-separated list of tickers to analyse (default: {','.join(DEFAULT_WATCHLIST)})."
         ),
     )
     run_p.add_argument(
         "--lookback-days",
         type=int,
-        default=_DEFAULT_LOOKBACK_DAYS,
+        default=DEFAULT_LOOKBACK_DAYS,
         dest="lookback_days",
         metavar="N",
-        help=f"Number of calendar days of market data + news to pull (default: {_DEFAULT_LOOKBACK_DAYS}).",
+        help=f"Number of calendar days of market data + news to pull (default: {DEFAULT_LOOKBACK_DAYS}).",
     )
     from firm.adapters.approval import AVAILABLE_CHANNELS
 
@@ -1121,16 +1120,16 @@ def _add_web_subcommand(sub: Any) -> None:
     web_p = sub.add_parser(
         "web",
         help=(
-            "Start the FastAPI dashboard on http://localhost:8000. "
+            f"Start the FastAPI dashboard on http://localhost:{DEFAULT_WEB_PORT}. "
             "Requires DATABASE_URL; ANTHROPIC_API_KEY enables HITL endpoints."
         ),
     )
     web_p.add_argument(
         "--port",
         type=int,
-        default=8000,
+        default=DEFAULT_WEB_PORT,
         metavar="PORT",
-        help="TCP port to listen on (default: 8000).",
+        help=f"TCP port to listen on (default: {DEFAULT_WEB_PORT}).",
     )
     web_p.add_argument(
         "--host",

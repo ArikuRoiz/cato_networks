@@ -16,6 +16,7 @@ from firm.agents.synthesis.schemas import (
     SynthesisInput,
     SynthesisReport,
 )
+from firm.domain.enums import LLMModel
 from firm.ports.llm import LLM
 from firm.ports.types import LLMError, LLMMessage
 
@@ -40,7 +41,7 @@ class SynthesisReportAgent(BaseAgent[SynthesisInput, SynthesisReport | Synthesis
 
     def run(self, inp: SynthesisInput) -> SynthesisReport | SynthesisFailure:
         messages = _build_messages(inp)
-        resp = self._llm.complete(messages, model="sonnet", max_tokens=1024)
+        resp = self._llm.complete(messages, model=LLMModel.SONNET, max_tokens=1024)
 
         if isinstance(resp, LLMError):
             return SynthesisFailure(reason=f"llm_error: {resp.message}")

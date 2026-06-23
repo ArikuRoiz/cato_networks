@@ -25,7 +25,7 @@ from firm.agents.technical.schemas import (
     TechnicalSignal,
     TechnicalUnavailable,
 )
-from firm.domain.enums import MACDCross, TechnicalBias
+from firm.domain.enums import LLMModel, MACDCross, TechnicalBias
 from firm.ports.llm import LLM
 from firm.ports.market_data import MarketDataSource
 from firm.ports.types import LLMError, LLMMessage, ToolDef
@@ -105,7 +105,7 @@ class TechnicalAnalysisAgent(BaseAgent[TechnicalInput, TechnicalSignal | Technic
             messages,
             tools=[_PRICE_TOOL],
             executors={"get_price_and_indicators": get_price_and_indicators},
-            model="haiku",
+            model=LLMModel.HAIKU,
             max_tokens=512,
             max_rounds=3,
         )

@@ -8,7 +8,7 @@ from firm.agents.research_manager.schemas import (
     ResearchManagerInput,
     ResearchPlan,
 )
-from firm.domain.enums import Recommendation
+from firm.domain.enums import LLMModel, Recommendation
 from firm.ports.llm import LLM
 from firm.ports.types import LLMError, LLMMessage
 from firm.utils import parse_json_dict
@@ -43,7 +43,7 @@ class ResearchManagerAgent(BaseAgent[ResearchManagerInput, ResearchPlan | Resear
 
     def run(self, inp: ResearchManagerInput) -> ResearchPlan | ResearchManagerFailure:
         messages = _build_messages(inp)
-        resp = self._llm.complete(messages, model="sonnet", max_tokens=512)
+        resp = self._llm.complete(messages, model=LLMModel.SONNET, max_tokens=512)
         if isinstance(resp, LLMError):
             return ResearchManagerFailure(
                 symbol=inp.symbol,

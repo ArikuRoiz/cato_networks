@@ -9,6 +9,16 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class LLMModel(StrEnum):
+    """Short model aliases routed to versioned model IDs by the LLM adapter.
+
+    ``HAIKU`` is the cheap extraction model; ``SONNET`` the strong decision model.
+    """
+
+    HAIKU = "haiku"
+    SONNET = "sonnet"
+
+
 class TradeSide(StrEnum):
     BUY = "buy"
     SELL = "sell"

@@ -13,6 +13,7 @@ from firm.agents._cycle_format import (
 )
 from firm.agents.base import BaseAgent
 from firm.agents.judge.schemas import JudgeFailure, JudgeInput, Verdict
+from firm.domain.enums import LLMModel
 from firm.ports.llm import LLM
 from firm.ports.types import LLMError, LLMMessage
 
@@ -47,7 +48,7 @@ class JudgeAgent(BaseAgent[JudgeInput, Verdict | JudgeFailure]):
 
     def run(self, inp: JudgeInput) -> Verdict | JudgeFailure:
         messages = _build_messages(inp)
-        resp = self._llm.complete(messages, model="sonnet", max_tokens=512)
+        resp = self._llm.complete(messages, model=LLMModel.SONNET, max_tokens=512)
 
         if isinstance(resp, LLMError):
             return JudgeFailure(

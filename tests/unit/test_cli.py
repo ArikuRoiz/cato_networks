@@ -113,10 +113,10 @@ class TestBuildParser:
 
 class TestParseTickers:
     def test_none_returns_default_watchlist(self) -> None:
-        from firm.cli import _DEFAULT_WATCHLIST
+        from firm.constants import DEFAULT_WATCHLIST
 
         result = _parse_tickers(None)
-        assert result == _DEFAULT_WATCHLIST
+        assert result == list(DEFAULT_WATCHLIST)
 
     def test_single_ticker_uppercased(self) -> None:
         result = _parse_tickers("nvda")
@@ -131,11 +131,11 @@ class TestParseTickers:
         assert result == ["NVDA", "AAPL"]
 
     def test_empty_string_returns_default(self) -> None:
-        from firm.cli import _DEFAULT_WATCHLIST
+        from firm.constants import DEFAULT_WATCHLIST
 
         # Empty string produces empty list after filtering — fall back
         result = _parse_tickers("")
-        assert result == _DEFAULT_WATCHLIST
+        assert result == list(DEFAULT_WATCHLIST)
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from firm.domain.enums import LLMModel
 from firm.ports.types import LLMError, LLMMessage, LLMResponse, ToolDef, ToolExecutors
 
 
@@ -24,7 +25,7 @@ class LLM(Protocol):
         self,
         messages: list[LLMMessage],
         *,
-        model: str,
+        model: LLMModel | str,
         max_tokens: int,
     ) -> LLMResponse | LLMError:
         """Send *messages* to the model and return the response.
@@ -40,7 +41,7 @@ class LLM(Protocol):
         tools: list[ToolDef],
         executors: ToolExecutors,
         *,
-        model: str,
+        model: LLMModel | str,
         max_tokens: int,
         max_rounds: int = 5,
     ) -> LLMResponse | LLMError:
@@ -57,7 +58,7 @@ class LLM(Protocol):
         self,
         messages: list[LLMMessage],
         *,
-        model: str,
+        model: LLMModel | str,
     ) -> int:
         """Estimate the token count for *messages* without sending a completion."""
         ...

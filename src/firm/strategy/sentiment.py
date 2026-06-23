@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 from firm.agents.research import Evidence
+from firm.domain.enums import LLMModel
 from firm.ports.llm import LLM
 from firm.ports.types import LLMError, LLMMessage
 
@@ -26,7 +27,7 @@ def _sentiment_system_prompt(symbol: str) -> str:
 def compute_sentiment(
     evidence: Evidence,
     llm: LLM,
-    model: str = "haiku",
+    model: LLMModel | str = LLMModel.HAIKU,
 ) -> float:
     """Rate overall sentiment for *evidence* using the LLM.
 
@@ -44,7 +45,7 @@ def compute_sentiment(
     llm:
         ``LLM`` port implementation (injected — never constructed here).
     model:
-        Model alias forwarded to ``llm.complete``.  Defaults to ``"haiku"``
+        Model alias forwarded to ``llm.complete``.  Defaults to ``LLMModel.HAIKU``
         for cost-efficient extraction.
     """
     messages = _build_messages(evidence)
