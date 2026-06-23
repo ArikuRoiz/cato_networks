@@ -30,11 +30,24 @@ production readiness.
    **Live findings are appended back to the corpus** so each future offline eval is richer.
    → `news_ingestion` is the production ingestion path, not dead weight.
 
-## 4. HITL is a feedback loop, not just a gate
-Every human **approve / edit / reject** on a trade is **recorded** (audit log + trace), so we can:
-- understand *why* a human overrode the desk,
-- feed those decisions back to improve future decision quality,
-- measure HITL latency and override rate as process metrics.
+## 4. HITL — human approves every cycle, with override
+The shipped policy is **human-approves-every-cycle, with override**
+(`RiskPolicyConfig.hitl_mode` defaults to `"always"`; a `"threshold"` mode that only pauses
+> 5% NAV still exists). The risk node fires a LangGraph `interrupt()` every cycle and checkpoints
+state; the human either:
+- **Approves** — execute the desk's recommended action (buy/sell as sized, or hold), or
+- **Rejects → picks an alternative action** — Buy, Sell, or Hold, overriding the desk.
+
+`firm.orchestration.hitl.resume_decision(graph, thread_id, decision)` carries the structured
+decision back into the risk node. An **override rewrites the cycle's `trade_proposal`** so the
+synthesis memo / report / judge describe **what actually executed**. Hard `RiskPolicy` limits still
+enforce at the execution guardrail even after approval.
+
+Every approve / override is **recorded** (audit log + `ApprovalRow`), so we can understand *why* a
+human overrode the desk, feed those decisions back, and measure HITL latency + override rate as
+process metrics. The **approval channel is a pluggable skill** — Telegram is the shipped operator
+channel (`firm bot` / `firm run --hitl telegram`); Slack / email / SMS slot in behind the same
+`resume_decision` core. See `docs/telegram_flow.md`.
 
 ## 5. Locked decisions (do not change without asking)
 Per-trade ≤ 10% NAV · single-name ≤ 25% NAV · daily-loss halt −3% · HITL above 5% NAV ·
@@ -65,8 +78,9 @@ max 3/symbol/hour.
 
 **Guardrails / mandatory steps** (deterministic, cross-cutting — the LLM **cannot** skip them):
 - **Risk guardrail** — a guardrail step that runs in **every** pipeline. Before any ledger write it
-  re-validates against RiskPolicy and routes anything > 5% NAV to the **HITL interrupt**. Runs even
-  if the Manager already self-checked risk — defense-in-depth.
+  re-validates against RiskPolicy and interrupts for human approval every cycle (`hitl_mode="always"`;
+  the `"threshold"` mode routes only > 5% NAV). Runs even if the Manager already self-checked risk —
+  defense-in-depth. Hard limits are enforced at execution regardless of the human's decision.
 - **Execution** — atomic ledger commit (cash debit + FIFO lot + audit + idempotency key). The only
   thing that moves money.
 - Cross-cutting: **injection scan** on retrieved text, **token-budget circuit breaker**,
@@ -78,32 +92,30 @@ research + technical (parallel)
         → debate (bull ⇄ bear ×N)
         → Research Manager (decide direction + conviction)   [SOLE decider — LLM]
         → size_position tool (deterministic sizing) + check_risk
-        → [RISK GUARDRAIL]  →(>5% NAV)→ HITL interrupt → human approve/edit/reject  (RECORDED)
-        → Execution (atomic ledger write)
+        → [RISK GUARDRAIL] → HITL interrupt (every cycle) → human Approve / Reject→(Buy|Sell|Hold)  (RECORDED)
+        → Execution (atomic ledger write; hard RiskPolicy limits still enforced)
         → Reporting agent (memo + Excel/Slack)
         → Judge (independent coherence audit, recorded)
 ```
 
-## 7. Known problems we are fixing (from the repo audit — see `REPO_AUDIT.md`)
+## 7. Refactor outcomes (historical — from the pre-refactor audit in `REPO_AUDIT.md`)
 
-**Core reframe: most "dead code" is a graded requirement that's built but NOT WIRED.**
-The fix is to converge to one graph and *wire* the required pieces — not just delete.
+The pre-refactor audit (below) framed most "dead code" as graded requirements that were built but
+NOT WIRED. The refactor (R1–R8 + the HITL/bot work) converged to one graph and wired the pieces.
+All of the items below are now **resolved**:
 
-- **Two diverged graphs.** `cli.py` runs the real 11-node graph (`firm/orchestration/graph.py`);
-  `eval/replay.py` builds its OWN old 5-node graph inline and imports nothing from
-  `firm.orchestration`. **The eval does not test the real system. Converge to ONE graph.**
-- **Eval shows zeros** — FakeLLM returns `"[]"` (0 claims → 0 grounding); PM runs with `llm=None`
-  → `Hold` → 0 trades.
-- **RAG embeddings are random** — `_embed()` ignores the API key and returns a random vector;
-  retrieval is keyword-only, the vector layer is decorative.
-- **Reporting emits hard-coded zeros** — `pnl`/`benchmark_return`/`current_price`/`unrealized_pnl`.
-- **Observability is no-op** — span decorators do nothing; trace-replay relies on the audit log.
-- **Built-but-not-wired required deliverables (wire, don't delete):** Excel + Slack sinks
-  (2-channel + Slack HITL), `NYSECalendar` (market-hours gating), `TokenBudgetCircuitBreaker`
-  (token guardrail), `OutputSchemaValidator`, `ApprovalRow` (HITL recording).
-- **Duplication to merge:** bull/bear → one `DebaterAgent`; `SynthesisInput`≈`JudgeInput`;
-  triplicated cycle-summary helpers; `HITLStatus`≈`ApprovalStatus`.
-- Tests currently green (233 passed); `news_ingestion` orphaned → becomes the live-data tool.
+- **One graph.** Both `cli.py` and `eval/replay.py` now run `firm.orchestration.graph.build_graph`.
+- **Eval shows a real trade** — single decision-maker (Research Manager) + deterministic
+  `size_position`; no more `llm=None → Hold`.
+- **Real RAG embeddings** — `SentenceTransformerEmbedder` (all-MiniLM-L6-v2, 384-dim) in pgvector.
+- **Reporting computes real NAV / P&L / benchmark** from the ledger + live prices.
+- **Wired deliverables:** Excel + Slack sinks (`MultiReportSink`, ≥2 channels), `NYSECalendar`
+  gating, `TokenBudgetLLM` breaker, `OutputSchemaValidator`, `ApprovalRow` HITL recording.
+- **Merged duplication:** one `DebaterAgent` (bull/bear stances); shared cycle-summary helpers;
+  unified HITL status enum.
+- **`news_ingestion` is wired** as the live news fetch (yfinance → pgvector) in production.
+- **HITL** is now approve-every-cycle with override + a pluggable approval channel; the persistent
+  `firm bot` Telegram operator service ships on top of the same `resume_decision` core.
 
 ## 8. Plan
 1. ✅ Agree this understanding.

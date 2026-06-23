@@ -1,5 +1,8 @@
 # Repository Audit — Pre-Refactor
 
+> **Historical document — this is the pre-refactor audit; all items below have since been resolved
+> by R1–R8 + the HITL/bot work (see `REFACTOR_TICKETS.md`). Kept for context.**
+
 > Full-repo audit (122 Python files, 30 markdowns) done by parallel review before the refactor.
 > Goal: find duplication, dead code, stale docs, and flow misunderstandings so we converge to one
 > excellent system. Pairs with `PROJECT_UNDERSTANDING.md`.

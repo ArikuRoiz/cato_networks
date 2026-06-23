@@ -42,26 +42,70 @@ is sent to `SLACK_CHANNEL`.
 
 ### HITL (human-in-the-loop) approval
 
-When a proposed trade exceeds 5% of NAV the graph halts and prompts the
-operator on the console:
+**Every cycle pauses for human approval** (`RiskPolicyConfig.hitl_mode="always"`).
+The risk node fires a LangGraph `interrupt()`, checkpoints state to Postgres, and
+waits. On the console:
 
 ```
-[HITL] Trade requires human approval for NVDA
-  Proposal: {...}
-  Options: [a]pprove  [r]eject  [e]dit <qty>
-Decision >
+[HITL] Decision required for NVDA (every cycle pauses)
+  Recommendation: strong_buy
+  Proposed trade: {...}
+  Options: [a]pprove  [b]uy  [s]ell  [h]old
+Decision (a/b/s/h) >
 ```
 
-Type `a` to approve, `r` to reject, or `e 50` to approve with an edited
-quantity of 50 shares.  Unrecognised input defaults to rejection (safe).
-The decision is durably recorded in the `approvals` and `audit_log` tables
-via the existing `record_approval` path so the full audit trail is intact.
+Type `a` to **approve** the desk's recommendation, or override it directly with
+`b` (buy), `s` (sell), or `h` (hold). Unrecognised input defaults to a hold
+override (safe — no trade, but a human decision is still recorded). An override
+rewrites the cycle's `trade_proposal` so the synthesis memo, report, and judge
+describe what actually executed.
+
+`firm.orchestration.hitl.resume_decision(graph, thread_id, decision)` carries the
+choice back into the graph. The decision is durably recorded in `approvals` +
+`audit_log` so the full audit trail is intact. **Hard `RiskPolicy` limits still
+enforce at the execution guardrail** even after approval — a human cannot wave
+through a trade that breaches a hard cap.
+
+To approve from Telegram instead, run with `--hitl telegram`, or operate the
+persistent bot (see §0a below). The approval channel is a pluggable skill —
+Slack / email / SMS adapters slot in behind the same `resume_decision` core.
 
 ### Durable checkpointing
 
 `firm run` uses a `PostgresSaver` checkpointer.  If the process crashes during
 a cycle the graph state is preserved in the `checkpoints` table and can be
 resumed (see §3 below).
+
+---
+
+## 0a. Operating the Telegram bot
+
+`firm bot` (or `make bot`) is the persistent operator service. It builds the same
+live pipeline as `firm run` and then long-polls Telegram (`getUpdates` — no
+webhook).
+
+```bash
+# Prereqs: make up + make seed, plus TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env
+make bot          # blocking; Ctrl+C to stop
+```
+
+Operator workflow in the chat:
+
+1. Type `/run NVDA` (or a bare `NVDA`). The bot runs the graph in a background thread.
+2. When the risk node interrupts, an **approval card** appears: recommendation +
+   💡 Why / 👍 Pros / 👎 Cons, with **✅ Approve** / **❌ Reject** buttons.
+3. Tap **Approve** to execute the recommendation, or **Reject** to get the
+   alternatives keyboard (**🟢 Buy / 🔴 Sell / ⏸️ Hold**) and override the desk.
+4. The bot calls `resume_decision`, executes, and sends back a "what I did & why"
+   message plus a run report.
+
+**Restart:** the pause is durable via the PostgresSaver checkpoint. If the bot
+process dies while a card is outstanding, restart `make bot`; the operator can
+still tap the button and `resume_decision` picks the paused thread up from the
+last checkpoint. If the token ends with `...` or is missing, the bot logs
+payloads at INFO and never calls the API (dry-run, fail-safe).
+
+See `docs/telegram_flow.md` for the full sequence and Telegram API calls.
 
 ---
 
@@ -193,14 +237,19 @@ the cycle can be resumed:
 
 ```python
 # In a Python shell wired to the same DATABASE_URL:
-from firm.orchestration.checkpointer import setup_checkpointer
+from firm.orchestration.checkpointer import open_connection, setup_checkpointer
 from firm.orchestration.graph import build_graph
+from firm.orchestration.hitl import resume_decision
 
-checkpointer = setup_checkpointer()
-graph = build_graph(checkpointer)
+with open_connection(database_url) as conn:
+    saver = setup_checkpointer(conn)           # wraps a caller-managed connection
+    graph = build_graph(saver, ports)
 
-# Resume with the same thread_id (= cycle_id) — LangGraph picks up from the last checkpoint
-graph.invoke(None, config={"configurable": {"thread_id": "<cycle-uuid>"}})
+    # If the thread is paused at a HITL interrupt, resume with a decision:
+    resume_decision(graph, "<cycle-uuid>", "approve")   # or "override:buy", "override:hold", …
+
+    # If it crashed mid-node (no interrupt), resume from the last checkpoint:
+    graph.invoke(None, config={"configurable": {"thread_id": "<cycle-uuid>"}})
 ```
 
 ### If no checkpoint exists (crash before first node)

@@ -35,9 +35,9 @@ research + technical (parallel)
         → Research Manager (decide direction + conviction)   [SOLE decider — LLM]
         → pm (deterministic sizing via size_position tool)
         → risk (RISK GUARDRAIL + HITL)
-             ↓ > 5% NAV
-             HITL interrupt → human approve / edit / reject   (RECORDED)
-             ↓ approved
+             ↓ every cycle (hitl_mode="always")
+             HITL interrupt → human Approve / Reject→(Buy|Sell|Hold)   (RECORDED)
+             ↓ approved / overridden
         → Execution (atomic ledger write, NYSE calendar-gated)
         → Reporting agent (Excel + Slack dispatch)
         → Synthesis (LLM investment memo)
@@ -59,7 +59,7 @@ The `risk` node re-validates before every ledger write — the LLM cannot skip i
 | `debate_bull` / `debate_bear` | **LLM agent, two roles** — one `DebaterAgent` class instantiated per stance; runs bull ⇄ bear turns × N rounds | haiku |
 | `research_manager` | **LLM agent — SOLE decider** — adjudicates debate; outputs direction (strong_buy … strong_sell) + conviction (0–1) | sonnet |
 | `pm` | **Deterministic node** — calls `size_position` tool; conviction × NAV → share qty; capped by `RiskPolicy` (≤ 10% NAV) | — |
-| `risk` | **Mandatory gate** — wraps `RiskAgent`; re-validates RiskPolicy; routes > 5% NAV to HITL interrupt; LLM cannot bypass | — |
+| `risk` | **Mandatory gate** — wraps `RiskAgent`; re-validates RiskPolicy; interrupts every cycle for human Approve/override (`hitl_mode="always"`); hard limits still enforced; LLM cannot bypass | — |
 | `execution` | **Pure function** — atomic ledger commit (cash + FIFO lot + audit + idempotency key); NYSE calendar-gated | — |
 | `reporting` | **Agent** — dispatches Excel + Slack report with real NAV/P&L; numbers come from ledger + live prices | — |
 | `synthesis` | **LLM agent** — writes the cited investment memo for the full cycle | sonnet |
@@ -79,16 +79,53 @@ a buy/sell into Hold for directional reasons — only because qty rounds to 0 or
 ### Mandatory guardrails (deterministic — LLM cannot skip)
 
 - **Risk guardrail (`risk` node)** — runs in every pipeline path before any ledger write; re-validates
-  against `RiskPolicy`; routes > 5% NAV to HITL even if the Manager already self-checked.
+  against `RiskPolicy`; under `hitl_mode="always"` it interrupts every cycle for human approval (the
+  `"threshold"` mode routes only > 5% NAV) even if the Manager already self-checked. Hard limits are
+  enforced at execution regardless of the human's decision.
 - **Execution** — single ACID transaction keyed by `idempotency_key`; the only thing that moves money;
   NYSE calendar-gated (`CycleOutcome.REJECTED_MARKET_CLOSED` when market is closed).
 - **Cross-cutting:** injection scan on retrieved text · token-budget circuit breaker (`TokenBudgetLLM`) ·
   output-schema validation.
 
-### HITL is a feedback loop
+### HITL — human approves every cycle, with override
 
-Every human approve / edit / reject is **recorded** (audit log + trace via `ApprovalRow`) so
-override rate and HITL latency are measurable process metrics and decisions feed future training.
+The default policy is **human-approves-every-cycle, with override** (`RiskPolicyConfig.hitl_mode`
+defaults to `"always"`; a `"threshold"` mode that only pauses above 5% NAV still exists). The
+`risk` node fires a LangGraph `interrupt()` and checkpoints state, then the human either:
+
+- **Approves** — execute the desk's recommended action (buy/sell as sized, or hold = no trade); or
+- **Rejects → picks an alternative action** — Buy, Sell, or Hold, overriding the desk.
+
+`firm.orchestration.hitl.resume_decision(graph, thread_id, decision)` carries the structured
+`HITLDecision` (`APPROVE`, `OVERRIDE_BUY`, `OVERRIDE_SELL`, `OVERRIDE_HOLD`, `EXPIRE`) back into the
+risk node via `Command(resume=…, update={"hitl_status": …})`. An override **rewrites the cycle's
+`trade_proposal`** (`_proposal_from_approved` / `_override_hold_proposal` in `nodes.py`) so the
+synthesis memo, report, and judge all describe **what actually executed** — an override-buy never
+yields a stale "Hold / no position change" memo.
+
+**Hard limits still enforce at the execution guardrail even after approval.**
+`LedgerGuardrail.enforce_hitl_approved` bypasses only the *soft* HITL gate (`HITLRequired`); a hard
+`RiskPolicy` breach (`Rejected`) still raises `LimitExceeded` and the trade fails.
+
+Every decision is recorded (audit log + `ApprovalRow`) so override rate and HITL latency are
+measurable process metrics. The **approval channel is a pluggable skill**: Telegram is the shipped
+operator channel; Slack / email / SMS are drop-in adapters behind the same `resume_decision` core.
+
+### Live run + Telegram operator service
+
+Beyond the offline demo there are two live entry points (both build the same live pipeline —
+yfinance market data + yfinance news ingestion + live Anthropic + Postgres + PostgresSaver):
+
+- **`firm run --tickers … --lookback-days N [--hitl console|telegram|auto]`** — live one-shot. Pulls
+  N days of real bars + news (`NewsIngestionAgent` via yfinance, upserted to pgvector), runs the graph
+  once per ticker against the live Postgres ledger, and reports via Excel + Slack. The risk node
+  interrupts each cycle; the operator approves/overrides on the console or via a single Telegram card.
+- **`firm bot`** (`make bot`) — persistent Telegram operator service. The operator types `/run <ticker>`
+  (or a bare ticker) → a rich approval card (recommendation + 💡 Why / 👍 Pros / 👎 Cons) → tap
+  **Approve**, or **Reject → Buy / Sell / Hold** alternatives → `resume_decision` executes → a
+  "what I did & why" message + run report come back to the chat. It uses a single `getUpdates`
+  long-poll (**no webhook**) and is durable via the PostgresSaver checkpoint. See
+  [`docs/telegram_flow.md`](docs/telegram_flow.md).
 
 ---
 
@@ -111,7 +148,9 @@ adapters/
   fakes.py             In-memory fakes for unit tests (FakeLLM, FakeMarketData, …)
   embeddings.py        SentenceTransformerEmbedder (all-MiniLM-L6-v2, 384-dim) — real embeddings
   evidence_pgvector.py Live — pgvector similarity search using SentenceTransformerEmbedder
-  market_data_frozen.py Replay — frozen CSV/Parquet bars (the only market-data adapter)
+  market_data_frozen.py Replay — frozen CSV bars (offline demo/eval)
+  market_data_live.py   Live — yfinance OHLCV (production)
+  telegram.py           TelegramHITL + BotService — getUpdates long-poll, inline-keyboard approval
   report/
     file.py    FileReportSink — text file + alerts.log
     slack.py   SlackReportSink — Block Kit messages (Approve/Reject/Edit buttons)
@@ -180,19 +219,23 @@ src/firm/
     json.py      parse_json_dict
     uuid.py      str_to_uuid
   config/        RiskPolicyConfig, watchlist
-  cli.py         Click CLI: run / backtest / ingest
+  cli.py         argparse CLI: run (live) / bot (Telegram) / demo / dev / seed / trace / web
+  bot/           Telegram operator service (getUpdates loop, approval cards, formatters)
 ```
 
 ### Three environments
 
-| Tier | LLM | Market data | News |
-|---|---|---|---|
-| **Historic replay (offline / CI)** | Cassette (via `build_offline_llm`) | Frozen CSV/Parquet | Frozen corpus |
-| **Default offline (demo)** | FakeLLM (via `build_offline_llm`) | FakeMarketData | Frozen corpus |
-| **Production (live)** | Anthropic API | live adapter | `NewsIngestionAgent` → appended to corpus |
+| Environment | LLM | Market data | News | Persistence |
+|---|---|---|---|---|
+| **(1) Offline historic replay** (`firm demo` / `firm dev`, eval/CI) | Cassette via `build_offline_llm` (FakeLLM fallback) | `FrozenMarketData` (committed CSV bars) | Frozen corpus (`FakeEvidenceStore`) | In-memory (`MemorySaver`, `_FakeLedger`) |
+| **(2) Offline agent tests** (pytest) | `FakeLLM` | `FakeMarketData` | `FakeEvidenceStore` | In-memory |
+| **(3) Live production** (`firm run` / `firm bot`, web `/api/run`) | live Anthropic (`AnthropicLLM`, graceful + token-budget wrapped) | `LiveMarketData` (yfinance) | `NewsIngestionAgent` (yfinance) → pgvector | Postgres ledger + `PostgresSaver` checkpoints |
 
-The demo is fully offline by default. Only `CASSETTE_MODE=record` touches the network.
-Both `cli.py` and `eval/replay.py` run the same `firm.orchestration.graph.build_graph`.
+The demo/eval are fully offline; only `CASSETTE_MODE=record` touches the network there. Live
+production uses real embeddings (`SentenceTransformerEmbedder`, all-MiniLM-L6-v2, 384-dim) in
+pgvector and a stable `FIRM_PORTFOLIO_ID` (`ensure_portfolio`) so portfolio state and filled trades
+persist across runs. Every decision cycle writes `decision_cycles` + `audit_log` for any outcome.
+All entry points run the same `firm.orchestration.graph.build_graph`.
 
 ---
 
@@ -214,8 +257,9 @@ Trigger
   → debate_bull / debate_bear: DebaterAgent(bull) + DebaterAgent(bear) alternate × MAX_ROUNDS
   → research_manager: adjudicates debate → direction (strong_buy…strong_sell) + conviction (0–1)
   → pm node: size_position(recommendation, conviction, nav, price, policy) → TradeProposal | Hold
-  → risk node: RiskAgent.check_trade; > 5% NAV → HITL interrupt
-      (HITL: checkpoint → Slack request → await human approve/edit/reject → ApprovalRow recorded → resume)
+  → risk node: RiskAgent.check_trade; interrupt for human approval (every cycle under hitl_mode="always")
+      (HITL: checkpoint → approval card (Telegram/console/Slack) → await Approve / Reject→Buy|Sell|Hold
+       → override rewrites trade_proposal → ApprovalRow recorded → resume_decision)
   → execution: atomic ledger commit  [single ACID txn, idempotency key; NYSE calendar-gated]
   → reporting: dispatches DailyReport to MultiReportSink → ExcelReportSink + SlackReportSink
   → synthesis: LLM writes cited investment memo
@@ -239,7 +283,7 @@ Trigger
 | One `DebaterAgent` class, two roles | Eliminates duplication; stance is a constructor arg; output schema unified as `DebaterCase | DebaterFailure` |
 | Tools layer (`src/firm/tools/`) | Deterministic capabilities (`size_position`, `check_risk`) are importable + unit-testable without a graph; tool closures for LLM agents live inline in each agent |
 | Risk guardrail is mandatory and LLM-unreachable | Defense-in-depth: the Manager may self-check risk; the guardrail re-validates unconditionally before ledger write |
-| HITL is a recorded feedback loop | Every approve/edit/reject persisted as `ApprovalRow` → override rate + latency are measurable process metrics |
+| HITL = approve-every-cycle with override | `hitl_mode="always"` interrupts every cycle; human Approves or Rejects→picks Buy/Sell/Hold; an override rewrites `trade_proposal` so downstream nodes describe the executed action. Every decision persisted as `ApprovalRow` → override rate + latency are measurable. Approval channel is a pluggable skill (Telegram shipped) |
 | Reporting dispatches; synthesis writes the memo | `reporting` fetches prices + ledger and sends the structured report (Excel + Slack); `synthesis` (LLM) writes the cited investment memo |
 | Judge is standalone | It audits the whole cycle including the memo, so it must not be the agent that wrote it; its 1–5 score feeds eval process-quality metrics |
 | Pipeline graph over supervisor | Workflow is deterministic; supervisor adds routing nondeterminism that fights replayability (FR-6) |

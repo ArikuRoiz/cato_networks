@@ -127,13 +127,16 @@ supervisor or hierarchical router. Reasons:
 **One graph, one source of truth.** Both `cli.py` and `eval/replay.py` call
 `firm.orchestration.graph.build_graph` — they run the same pipeline topology.
 
-**Interrupt/resume for HITL** — the `risk` node calls `interrupt()` when notional
-exceeds 5% NAV. LangGraph checkpoints the full graph state to Postgres before pausing.
-A human responds via Slack (Block Kit Approve/Reject/Edit buttons); the graph resumes from
-the checkpoint, re-validates limits against the current bar, and proceeds to execution (or
-rejects if limits are now breached). Every human approve/edit/reject is recorded as an
-`ApprovalRow` via `LedgerRepository.record_approval` — override rate and HITL latency are
-measurable process metrics.
+**Interrupt/resume for HITL** — the `risk` node calls `interrupt()` on **every cycle**
+(`hitl_mode="always"`; a `"threshold"` mode that pauses only above 5% NAV still exists).
+LangGraph checkpoints the full graph state to Postgres before pausing. The human responds over a
+**pluggable approval channel** (shipped: Telegram — `firm bot` / `firm run --hitl telegram`;
+Slack/email/SMS slot in behind the same core): **Approve** executes the desk's recommendation, or
+**Reject** lets the human pick an alternative action (Buy/Sell/Hold). `resume_decision` carries the
+choice back; the graph resumes from the checkpoint, an override rewrites the cycle's `trade_proposal`
+so the memo/report/judge match what actually executed, and the hard `RiskPolicy` limits re-validate
+at the execution guardrail regardless. Every approve/override is recorded as an `ApprovalRow` via
+`LedgerRepository.record_approval` — override rate and HITL latency are measurable process metrics.
 
 ---
 
@@ -259,10 +262,10 @@ Applying it is a deliberate non-goal for a local demo.
 resume from checkpoint); zero-downtime failover is not. The HA path is documented in
 `infra/main.tf` (RDS Multi-AZ) but not applied.
 
-**No live market-data adapter.** Market data is frozen OHLCV CSVs (`market_data_frozen.py`
-is the only adapter). The `MarketDataSource` port makes adding a live feed adapter a one-file
-change. `NewsIngestionAgent` exists for live news fetching (via `yfinance`) but is not wired
-into the orchestration graph.
+**Two data modes.** Offline (replay/eval/demo) uses frozen OHLCV CSVs (`market_data_frozen.py`)
+and the synthetic corpus; **live** production (`firm run` / `firm bot`) uses `market_data_live.py`
+(yfinance) and `NewsIngestionAgent` (yfinance → pgvector), both wired into the live pipeline and
+sitting behind the `MarketDataSource` / `EvidenceStore` ports.
 
 **Synthetic news corpus.** `data/news/corpus.json` contains 50-100 synthetic articles,
 license-clean for commit. Real news requires a vendor subscription.

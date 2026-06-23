@@ -30,7 +30,7 @@ a disguised service. One agent decides direction; everything else is determinist
 
 | Gate | Position | Action |
 |---|---|---|
-| Risk node (`risk`) | After `pm` node, before every ledger write | Re-validates against RiskPolicy; routes > 5% NAV to HITL interrupt |
+| Risk node (`risk`) | After `pm` node, before every ledger write | Re-validates against RiskPolicy; interrupts every cycle for human approval (`hitl_mode="always"`); hard limits enforced at execution even after approval |
 | Execution node | After risk node | Atomic ledger commit (the only thing that moves money); NYSE calendar-gated |
 | Injection scan | Inside `search_news` closure | Filters every retrieved chunk before the LLM sees it |
 | Token-budget circuit breaker | Cross-cutting (`TokenBudgetLLM`) | Halts the pipeline if token budget is exhausted |
@@ -43,8 +43,8 @@ research + technical (parallel)
         → debate_bull → debate_bear (×N rounds, ONE DebaterAgent class, two stances)
         → research_manager (decide direction + conviction)   [SOLE decider — LLM]
         → pm (deterministic sizing via size_position tool)
-        → risk →(> 5% NAV)→ HITL interrupt → human approve/edit/reject  (RECORDED)
-        → execution (atomic ledger write, NYSE calendar-gated)
+        → risk → HITL interrupt (every cycle) → human Approve / Reject→(Buy|Sell|Hold)  (RECORDED)
+        → execution (atomic ledger write, NYSE calendar-gated; hard RiskPolicy limits enforced)
         → reporting (Excel + Slack dispatch, real NAV/P&L)
         → synthesis (LLM investment memo)
         → judge (independent coherence audit, recorded)
@@ -263,15 +263,36 @@ risk policy, portfolio, calendar). Both `cli.py` and `eval/replay.py` call `buil
 
 ---
 
+# Live path, bot, and HITL channel abstraction
+
+The same `build_graph` runs in three environments (see `ARCHITECTURE.md` → Three environments):
+offline historic replay (frozen bars + cassette LLM), offline agent tests (fakes), and **live
+production**. In live production:
+
+- **Market data:** `LiveMarketData` (yfinance OHLCV) replaces `FrozenMarketData`.
+- **News:** `NewsIngestionAgent` (`agents/news_ingestion/`) is **wired as the live news fetch** —
+  it pulls recent Yahoo Finance headlines via `yfinance` and upserts them into the pgvector corpus
+  (real `SentenceTransformerEmbedder` embeddings) before the graph runs.
+- **LLM:** live Anthropic (`AnthropicLLM`), graceful + `TokenBudgetLLM`-wrapped.
+- **Persistence:** Postgres ledger (stable `FIRM_PORTFOLIO_ID`) + `PostgresSaver` checkpoints.
+
+**HITL channel is a pluggable skill.** The risk node only raises `interrupt()`; the channel that
+shows the approval card and resumes the graph is swappable behind the shared
+`firm.orchestration.hitl.resume_decision(graph, thread_id, decision)` core:
+
+- **`firm run --hitl console`** — interactive stdin prompt (`a`/`b`/`s`/`h`).
+- **`firm run --hitl telegram`** — single Telegram approval card (one-shot).
+- **`firm bot`** (`make bot`) — persistent Telegram operator service: `/run <ticker>` → approval
+  card (💡 Why / 👍 Pros / 👎 Cons) → Approve, or Reject → Buy / Sell / Hold override → resume →
+  report back. See `docs/telegram_flow.md`.
+- Slack / email / SMS are drop-in adapters behind the same core.
+
+---
+
 # Limitations worth knowing
 
 1. **`FakeLLM.complete_with_tools` uses hardcoded arg names.** Calls executors with
    `{"query":"test","k":5}` — the wrong key for `price_indicators` (which takes `lookback_days`).
-   Also wraps executors in `except Exception: pass`, masking real bugs.
-2. **`NewsIngestionAgent` not wired into the graph.** The agent exists in
-   `agents/news_ingestion/` but nothing imports it from the orchestration layer. Live news
-   ingestion is not active in the current demo path.
-3. **No live market-data adapter.** `market_data_frozen.py` is the only market-data adapter;
-   there is no `market_data_live.py`. Wiring a live feed requires adding a new adapter.
-4. **Observability spans are no-ops.** Span decorators exist but emit nothing; trace-replay
-   relies solely on the audit log.
+   Also wraps executors in `except Exception: pass`, masking real bugs. (Offline test path only.)
+2. **Observability spans are thin.** Tracing setup exists; trace-replay leans primarily on the
+   Postgres audit log (`audit_log` + `decision_cycles`), which is the authoritative replay source.

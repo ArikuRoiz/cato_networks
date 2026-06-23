@@ -3,21 +3,28 @@
 Build phase to converge the firm onto the target in `PROJECT_UNDERSTANDING.md`.
 Each ticket is scoped to be dispatchable on its own (e.g. to a Sonnet build agent).
 
+> **Status: all DONE.** R1–R8 and the follow-on HITL/bot work have shipped. The firm runs on a
+> single converged graph, with real embeddings, real NAV/P&L, wired Excel+Slack reporting, and a
+> live production path (yfinance + Anthropic + Postgres). HITL is now approve-every-cycle with
+> override, and the persistent `firm bot` Telegram operator service ships on top of the shared
+> `resume_decision` core. The ticket bodies below are kept as a historical record.
+
 ## Ticket map
-- **R1 — Single decision-maker: dissolve Portfolio Manager into tools** ← *this ticket, start here*
-- R2 — Converge to ONE graph (eval/CLI run `firm.orchestration.graph`; delete `_build_eval_graph`)
-- R3 — Stand up the `tools/` layer (search_news, fetch_live_news, price_indicators, size_position, check_risk, make_report, ledger_commit)
-- R4 — Merge duplicates (bull/bear → `DebaterAgent`; `SynthesisInput`≈`JudgeInput`; triplicated helpers; `HITLStatus`≈`ApprovalStatus`)
-- R5 — Wire built-but-unwired deliverables (Excel + Slack sinks, NYSECalendar gating, TokenBudget breaker, OutputSchemaValidator)
-- R6 — HITL recording feedback loop (`ApprovalRow`: persist every approve/edit/reject)
-- R7 — Fix correctness gaps (reporting NAV/P&L real numbers; real embeddings; eval shows a real trade)
-- (pending) Judge: keep standalone vs fold into Reporting agent
+- ✅ **R1 — Single decision-maker: dissolve Portfolio Manager into tools** — DONE
+- ✅ R2 — Converge to ONE graph (eval/CLI run `firm.orchestration.graph`; `_build_eval_graph` gone) — DONE
+- ✅ R3 — Stand up the `tools/` layer (size_position, check_risk; search_news / price_indicators as inline agent closures; live news via `NewsIngestionAgent`) — DONE
+- ✅ R4 — Merge duplicates (bull/bear → `DebaterAgent`; shared cycle-summary helpers; unified HITL status enum) — DONE
+- ✅ R5 — Wire built-but-unwired deliverables (Excel + Slack sinks, NYSECalendar gating, TokenBudget breaker, OutputSchemaValidator) — DONE
+- ✅ R6 — HITL recording feedback loop (`ApprovalRow`: persist every approve/override) — DONE
+- ✅ R7 — Fix correctness gaps (reporting NAV/P&L real numbers; real `SentenceTransformerEmbedder` embeddings; eval shows a real trade) — DONE
+- ✅ R8 — Live production path + HITL channel skill (`firm run` live, `firm bot` Telegram, `resume_decision`, always+override HITL) — DONE
+- ✅ Judge: kept standalone (independent final auditor) — DONE
 
 ---
 
 ## R1 — Single decision-maker: dissolve Portfolio Manager into tools
 
-**Status:** Ready · **Depends on:** none (safe to start first; doesn't need the graph convergence)
+**Status:** ✅ DONE · **Depends on:** none (safe to start first; doesn't need the graph convergence)
 
 ### Why
 Today **two** components decide trade direction with different logic:
