@@ -23,6 +23,7 @@ from firm.domain import (
 )
 from firm.domain.portfolio import _COMMISSION_PER_SHARE, _SLIPPAGE_BPS
 from firm.persistence.models import (
+    ApprovalRow,
     AuditLogRow,
     HoldingRow,
     LotRow,
@@ -73,6 +74,62 @@ class LedgerRepository:
 
     def sell(self, trade: Trade, portfolio_id: uuid.UUID) -> Trade:
         return self._run_in_transaction(trade, portfolio_id, _execute_sell)
+
+    def record_approval(
+        self,
+        *,
+        correlation_id: uuid.UUID,
+        trade_id: uuid.UUID,
+        status: str,
+        original_notional: Decimal,
+        original_qty: Decimal,
+        edited_qty: Decimal | None = None,
+        decided_at: datetime | None = None,
+        decided_by: str = "risk_committee",
+    ) -> None:
+        """Write an ApprovalRow and matching audit entry in a single transaction.
+
+        Captures the full HITL decision so the firm can audit and replay every
+        human override.  The ApprovalRow is the navigable FK record; the
+        audit_log entry carries the rich financial payload for full replayability.
+
+        Args:
+            correlation_id: Cycle correlation UUID (used as FK in audit_log).
+            trade_id: FK to the TradeRow being approved/rejected.
+            status: One of 'approved', 'rejected', 'expired' (HITLStatus values).
+            original_notional: Notional value of the original proposal.
+            original_qty: Quantity of the original proposal.
+            edited_qty: Human-adjusted quantity; None when not edited.
+            decided_at: Timestamp of the decision; defaults to now(UTC).
+            decided_by: Identity of the decision-maker; defaults to 'risk_committee'.
+        """
+        ts = decided_at if decided_at is not None else datetime.now(UTC)
+        with Session(self._engine, autobegin=False) as session:
+            session.begin()
+            _insert_approval_row(
+                session,
+                trade_id=trade_id,
+                status=status,
+                decided_by=decided_by,
+                decided_at=ts,
+            )
+            _append_audit(
+                session,
+                correlation_id=correlation_id,
+                actor=decided_by,
+                action="hitl.decision",
+                payload=_approval_audit_payload(
+                    correlation_id=correlation_id,
+                    trade_id=trade_id,
+                    status=status,
+                    original_notional=original_notional,
+                    original_qty=original_qty,
+                    edited_qty=edited_qty,
+                    decided_at=ts,
+                    decided_by=decided_by,
+                ),
+            )
+            session.commit()
 
     # ------------------------------------------------------------------
     # Private
@@ -303,3 +360,48 @@ def _append_audit(
         ts=datetime.now(tz=UTC),
     )
     session.add(row)
+
+
+def _insert_approval_row(
+    session: Session,
+    *,
+    trade_id: uuid.UUID,
+    status: str,
+    decided_by: str,
+    decided_at: datetime,
+) -> None:
+    row = ApprovalRow(
+        id=uuid.uuid4(),
+        trade_id=trade_id,
+        threshold_breached="hitl_threshold_pct",
+        status=status,
+        decided_by=decided_by,
+        expires_at=decided_at,  # approval window already elapsed; store decided_at
+        decided_at=decided_at,
+    )
+    session.add(row)
+
+
+def _approval_audit_payload(
+    *,
+    correlation_id: uuid.UUID,
+    trade_id: uuid.UUID,
+    status: str,
+    original_notional: Decimal,
+    original_qty: Decimal,
+    edited_qty: Decimal | None,
+    decided_at: datetime,
+    decided_by: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "correlation_id": str(correlation_id),
+        "trade_id": str(trade_id),
+        "status": status,
+        "original_notional": str(original_notional),
+        "original_qty": str(original_qty),
+        "decided_at": decided_at.isoformat(),
+        "decided_by": decided_by,
+    }
+    if edited_qty is not None:
+        payload["edited_qty"] = str(edited_qty)
+    return payload

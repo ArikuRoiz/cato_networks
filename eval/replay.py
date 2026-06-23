@@ -121,6 +121,42 @@ class EvalResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class _ApprovalRecord:
+    """In-memory record of a HITL decision captured by ``_FakeLedger``."""
+
+    __slots__ = (
+        "correlation_id",
+        "decided_at",
+        "decided_by",
+        "edited_qty",
+        "original_notional",
+        "original_qty",
+        "status",
+        "trade_id",
+    )
+
+    def __init__(
+        self,
+        *,
+        correlation_id: uuid.UUID,
+        trade_id: uuid.UUID,
+        status: str,
+        original_notional: Decimal,
+        original_qty: Decimal,
+        edited_qty: Decimal | None,
+        decided_at: datetime,
+        decided_by: str,
+    ) -> None:
+        self.correlation_id = correlation_id
+        self.trade_id = trade_id
+        self.status = status
+        self.original_notional = original_notional
+        self.original_qty = original_qty
+        self.edited_qty = edited_qty
+        self.decided_at = decided_at
+        self.decided_by = decided_by
+
+
 class _FakeLedger:
     """Minimal in-memory ledger for eval runs.
 
@@ -130,12 +166,16 @@ class _FakeLedger:
     ``buy()`` and ``sell()`` return a ``Trade`` with FILLED status to
     satisfy the structural contract of ``LedgerRepository.buy()`` /
     ``LedgerRepository.sell()``.
+
+    ``record_approval()`` appends to ``approvals`` for offline exercise
+    of the HITL recording path without a database.
     """
 
     def __init__(self, portfolio: Portfolio, portfolio_id: uuid.UUID) -> None:
         self._portfolio = portfolio
         self._portfolio_id = portfolio_id
         self._trades: list[Trade] = []
+        self.approvals: list[_ApprovalRecord] = []
 
     def get_portfolio(self, portfolio_id: uuid.UUID) -> Portfolio:
         return self._portfolio
@@ -167,6 +207,33 @@ class _FakeLedger:
         _apply_sell(self._portfolio, trade)
         self._trades.append(filled)
         return filled
+
+    def record_approval(
+        self,
+        *,
+        correlation_id: uuid.UUID,
+        trade_id: uuid.UUID,
+        status: str,
+        original_notional: Decimal,
+        original_qty: Decimal,
+        edited_qty: Decimal | None = None,
+        decided_at: datetime | None = None,
+        decided_by: str = "risk_committee",
+    ) -> None:
+        """Capture a HITL decision in memory for offline eval and testing."""
+        ts = decided_at if decided_at is not None else datetime.now(tz=UTC)
+        self.approvals.append(
+            _ApprovalRecord(
+                correlation_id=correlation_id,
+                trade_id=trade_id,
+                status=status,
+                original_notional=original_notional,
+                original_qty=original_qty,
+                edited_qty=edited_qty,
+                decided_at=ts,
+                decided_by=decided_by,
+            )
+        )
 
 
 def _apply_buy(

@@ -21,9 +21,10 @@ Dependency injection:
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -234,6 +235,7 @@ def make_risk_node(
             )
             # Re-entry after resume: hitl_status is in state via Command(update=...).
             hitl_status = state.get("hitl_status")
+            _record_hitl_decision(ports, hitl_status, pending_approved, risk_result)
             return _route_hitl(hitl_status, pending_approved)
 
         return _map_risk_result(risk_result, proposal_raw)
@@ -256,6 +258,37 @@ def _map_risk_result(risk_result: object, proposal_raw: dict[str, Any]) -> dict[
     if isinstance(risk_result, Rejected):
         return {"cycle_outcome": CycleOutcome.REJECTED}
     return {"cycle_outcome": CycleOutcome.ERROR, "error": f"unexpected risk result: {risk_result!r}"}
+
+
+def _record_hitl_decision(
+    ports: NodePorts,
+    hitl_status: str | None,
+    pending_approved: ApprovedTrade,
+    hitl_required: AgentHITLRequired,
+) -> None:
+    """Durably record a HITL decision before routing.
+
+    Called on every resume from an interrupt so the firm has an auditable
+    record of every human override regardless of outcome.  Failures are
+    caught and logged — a recording error must never abort the decision path.
+    """
+    if ports.ledger is None:
+        return
+    try:
+        ports.ledger.record_approval(
+            correlation_id=uuid.UUID(pending_approved.correlation_id),
+            trade_id=pending_approved.trade.id,
+            status=hitl_status or "unknown",
+            original_notional=hitl_required.proposal.notional,
+            original_qty=hitl_required.proposal.qty,
+            decided_at=datetime.now(UTC),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to record HITL decision (correlation_id=%s, status=%r)",
+            pending_approved.correlation_id,
+            hitl_status,
+        )
 
 
 def _route_hitl(hitl_status: str | None, pending_approved: ApprovedTrade) -> dict[str, Any]:

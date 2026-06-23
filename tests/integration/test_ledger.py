@@ -29,6 +29,7 @@ from testcontainers.postgres import PostgresContainer  # type: ignore[import-unt
 
 from firm.domain import Trade, TradeStatus
 from firm.persistence.ledger import LedgerRepository
+from firm.persistence.models import ApprovalRow, AuditLogRow
 
 # ---------------------------------------------------------------------------
 # Project-root anchor (works regardless of caller cwd)
@@ -291,3 +292,101 @@ def test_ledger_fifo_sell(migrated_engine: Engine) -> None:
     assert abs(cash_gained - expected_proceeds) < Decimal("0.01"), (
         f"Cash gained {cash_gained} does not match expected proceeds {expected_proceeds}."
     )
+
+
+# ---------------------------------------------------------------------------
+# test_record_approval_writes_row_and_audit_entry (R6)
+# ---------------------------------------------------------------------------
+
+
+def test_record_approval_writes_row_and_audit_entry(migrated_engine: Engine) -> None:
+    """record_approval must write one ApprovalRow and one AuditLogRow atomically.
+
+    Steps:
+      1. Create a portfolio and buy a trade so a valid TradeRow FK exists.
+      2. Call record_approval for each HITL status variant.
+      3. Assert ApprovalRow fields match what was passed in.
+      4. Assert AuditLogRow has action='hitl.decision' and full payload.
+    """
+    from sqlalchemy.orm import Session
+
+    initial_cash = Decimal("50000.00")
+    portfolio_id = _make_portfolio(migrated_engine, initial_cash)
+    repo = LedgerRepository(migrated_engine)
+
+    trade = _build_trade(portfolio_id, qty=Decimal("10"), price=Decimal("100.00"))
+    filled = repo.buy(trade, portfolio_id)
+    assert filled.id is not None
+
+    correlation_id = uuid.uuid4()
+    original_notional = Decimal("1005.05")
+    original_qty = Decimal("10")
+
+    repo.record_approval(
+        correlation_id=correlation_id,
+        trade_id=filled.id,
+        status="approved",
+        original_notional=original_notional,
+        original_qty=original_qty,
+        decided_by="risk_committee",
+    )
+
+    with Session(migrated_engine) as session:
+        approval_rows = (
+            session.query(ApprovalRow).filter_by(trade_id=filled.id).all()
+        )
+        assert len(approval_rows) == 1, (
+            f"Expected 1 ApprovalRow for trade {filled.id}, got {len(approval_rows)}"
+        )
+        row = approval_rows[0]
+        assert row.status == "approved"
+        assert row.decided_by == "risk_committee"
+        assert row.decided_at is not None
+
+        audit_rows = (
+            session.query(AuditLogRow)
+            .filter_by(correlation_id=correlation_id, action="hitl.decision")
+            .all()
+        )
+        assert len(audit_rows) == 1, (
+            f"Expected 1 AuditLogRow with action='hitl.decision', got {len(audit_rows)}"
+        )
+        payload = audit_rows[0].payload
+        assert payload["status"] == "approved"
+        assert payload["trade_id"] == str(filled.id)
+        assert payload["correlation_id"] == str(correlation_id)
+        assert payload["original_notional"] == str(original_notional)
+        assert payload["original_qty"] == str(original_qty)
+        assert "edited_qty" not in payload
+
+
+def test_record_approval_includes_edited_qty_when_provided(migrated_engine: Engine) -> None:
+    """record_approval with edited_qty must include it in the audit payload."""
+    from sqlalchemy.orm import Session
+
+    portfolio_id = _make_portfolio(migrated_engine, Decimal("50000.00"))
+    repo = LedgerRepository(migrated_engine)
+
+    trade = _build_trade(portfolio_id, qty=Decimal("5"), price=Decimal("200.00"))
+    filled = repo.buy(trade, portfolio_id)
+
+    correlation_id = uuid.uuid4()
+    repo.record_approval(
+        correlation_id=correlation_id,
+        trade_id=filled.id,
+        status="edited",
+        original_notional=Decimal("1000"),
+        original_qty=Decimal("5"),
+        edited_qty=Decimal("3"),
+    )
+
+    with Session(migrated_engine) as session:
+        audit_rows = (
+            session.query(AuditLogRow)
+            .filter_by(correlation_id=correlation_id, action="hitl.decision")
+            .all()
+        )
+        assert len(audit_rows) == 1
+        payload = audit_rows[0].payload
+        assert payload["edited_qty"] == "3"
+        assert payload["status"] == "edited"
