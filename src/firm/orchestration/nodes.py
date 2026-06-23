@@ -52,7 +52,7 @@ from firm.domain import Portfolio
 from firm.domain.enums import CycleOutcome, HITLStatus, Recommendation, RefusalReason, TradeSide
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.orchestration.state import GraphState
-from firm.persistence.ledger import LedgerRepository
+from firm.persistence.ledger import CycleAuditRecord, LedgerRepository
 from firm.ports.evidence import EvidenceStore
 from firm.ports.llm import LLM
 from firm.ports.market_data import MarketDataSource
@@ -448,6 +448,9 @@ def make_reporting_node(ports: NodePorts) -> Callable[[GraphState], dict[str, An
         )
         result = agent.run(inp)
         outcome = state.get("cycle_outcome", CycleOutcome.FILLED)
+
+        _persist_cycle(ports, state, decision_ts, outcome)
+
         if isinstance(result, ReportFailure):
             return {"cycle_outcome": outcome}  # degrade gracefully; don't overwrite outcome
         return {"cycle_outcome": outcome}
@@ -674,6 +677,108 @@ def make_judge_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
         return {"verdict": result.model_dump(mode="json")}
 
     return judge_node
+
+
+# ---------------------------------------------------------------------------
+# Cycle persistence helpers
+# ---------------------------------------------------------------------------
+
+
+def _persist_cycle(
+    ports: NodePorts,
+    state: GraphState,
+    decision_ts: datetime,
+    outcome: str | None,
+) -> None:
+    """Build a CycleAuditRecord from GraphState and write it via the ledger.
+
+    Failure-isolated: logs the exception and returns without aborting the cycle.
+    Called by reporting_node for every outcome (hold/rejected/filled/error/…).
+    """
+    if ports.ledger is None:
+        return
+    try:
+        record = _build_cycle_audit_record(state, decision_ts, outcome)
+        ports.ledger.record_cycle(record)
+    except Exception:
+        logger.exception(
+            "Failed to persist decision cycle (correlation_id=%s, outcome=%r)",
+            state.get("correlation_id", ""),
+            outcome,
+        )
+
+
+def _build_cycle_audit_record(
+    state: GraphState,
+    decision_ts: datetime,
+    outcome: str | None,
+) -> CycleAuditRecord:
+    """Extract CycleAuditRecord fields from GraphState.
+
+    Reads research_plan for recommendation/conviction, verdict for judge_score
+    and alignment, and approved_trade for trade_id when the outcome is filled.
+    """
+    correlation_id = state.get("correlation_id", "")
+    symbol = state.get("symbol", "")
+    trigger_type = state.get("trigger_type", "scheduled")
+
+    recommendation, conviction = _extract_research_plan_fields(state.get("research_plan"))
+    judge_score, alignment = _extract_verdict_fields(state.get("verdict"))
+    trade_id = _extract_trade_id(state.get("approved_trade"), outcome)
+
+    return CycleAuditRecord(
+        correlation_id=correlation_id,
+        symbol=symbol,
+        trigger_type=trigger_type,
+        decision_ts=decision_ts,
+        recommendation=recommendation,
+        conviction=conviction,
+        outcome=outcome or CycleOutcome.ERROR,
+        judge_score=judge_score,
+        alignment=alignment,
+        trade_id=trade_id,
+    )
+
+
+def _extract_research_plan_fields(
+    research_plan: dict[str, Any] | None,
+) -> tuple[str | None, float | None]:
+    """Return (recommendation, conviction) from a serialised research_plan dict."""
+    if not research_plan:
+        return None, None
+    recommendation = research_plan.get("recommendation")
+    conviction_raw = research_plan.get("conviction")
+    conviction = float(conviction_raw) if conviction_raw is not None else None
+    return recommendation, conviction
+
+
+def _extract_verdict_fields(
+    verdict: dict[str, Any] | None,
+) -> tuple[int | None, str | None]:
+    """Return (judge_score, alignment) from a serialised verdict dict."""
+    if not verdict:
+        return None, None
+    score_raw = verdict.get("coherence_score")
+    judge_score = int(score_raw) if score_raw is not None else None
+    alignment = verdict.get("alignment")
+    return judge_score, alignment
+
+
+def _extract_trade_id(
+    approved_trade: dict[str, Any] | None,
+    outcome: str | None,
+) -> uuid.UUID | None:
+    """Return the trade UUID when the cycle produced a fill, else None."""
+    if outcome != CycleOutcome.FILLED or approved_trade is None:
+        return None
+    trade_raw = approved_trade.get("trade", {})
+    trade_id_str = trade_raw.get("id")
+    if not trade_id_str:
+        return None
+    try:
+        return uuid.UUID(str(trade_id_str))
+    except (ValueError, AttributeError):
+        return None
 
 
 # ---------------------------------------------------------------------------

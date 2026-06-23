@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -25,11 +26,48 @@ from firm.domain.portfolio import _COMMISSION_PER_SHARE, _SLIPPAGE_BPS
 from firm.persistence.models import (
     ApprovalRow,
     AuditLogRow,
+    DecisionCycleRow,
     HoldingRow,
     LotRow,
     PortfolioRow,
     TradeRow,
 )
+
+# ---------------------------------------------------------------------------
+# CycleAuditRecord — typed input to record_cycle; wraps at the boundary
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CycleAuditRecord:
+    """All information captured at the end of a decision cycle.
+
+    Callers construct this from GraphState fields; the repository converts it
+    into one ``decision_cycles`` row + several ``audit_log`` rows atomically.
+
+    Fields:
+        correlation_id: UUID string copied from GraphState["correlation_id"].
+        symbol: Ticker symbol being evaluated.
+        trigger_type: "scheduled" | "event".
+        decision_ts: Timestamp when the cycle started (UTC).
+        recommendation: Recommendation string from the research plan, or None.
+        conviction: Research manager conviction score, or None.
+        outcome: CycleOutcome string (filled/hold/rejected/…).
+        judge_score: Coherence score from JudgeAgent (1-5), or None.
+        alignment: VerdictAlignment string from JudgeAgent, or None.
+        trade_id: UUID of the filled Trade if outcome is "filled", else None.
+    """
+
+    correlation_id: str
+    symbol: str
+    trigger_type: str
+    decision_ts: datetime
+    recommendation: str | None
+    conviction: float | None
+    outcome: str
+    judge_score: int | None
+    alignment: str | None
+    trade_id: uuid.UUID | None
 
 
 class LedgerRepository:
@@ -128,6 +166,52 @@ class LedgerRepository:
                     decided_at=ts,
                     decided_by=decided_by,
                 ),
+            )
+            session.commit()
+
+    def record_cycle(self, record: CycleAuditRecord) -> None:
+        """Persist a decision cycle and its key audit steps atomically.
+
+        Writes one ``decision_cycles`` row and four ``audit_log`` entries in a
+        single transaction, regardless of cycle outcome (hold, rejected, filled,
+        error).  Designed to be called at the end of every cycle path so no
+        decision is invisible in the DB.
+
+        Args:
+            record: Fully-populated CycleAuditRecord from the reporting node.
+        """
+        correlation_uuid = uuid.UUID(record.correlation_id)
+        cycle_row_id = uuid.uuid4()
+        with Session(self._engine, autobegin=False) as session:
+            session.begin()
+            _insert_decision_cycle_row(session, cycle_row_id, record)
+            _append_audit(
+                session,
+                correlation_id=correlation_uuid,
+                actor="research_manager",
+                action="research.done",
+                payload=_research_done_payload(record),
+            )
+            _append_audit(
+                session,
+                correlation_id=correlation_uuid,
+                actor="pm",
+                action="decision.made",
+                payload=_decision_made_payload(record),
+            )
+            _append_audit(
+                session,
+                correlation_id=correlation_uuid,
+                actor="risk",
+                action="risk.outcome",
+                payload=_risk_outcome_payload(record),
+            )
+            _append_audit(
+                session,
+                correlation_id=correlation_uuid,
+                actor="system",
+                action="cycle.outcome",
+                payload=_cycle_outcome_payload(record, cycle_row_id),
             )
             session.commit()
 
@@ -412,4 +496,74 @@ def _approval_audit_payload(
     }
     if edited_qty is not None:
         payload["edited_qty"] = str(edited_qty)
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# record_cycle helpers — one function per audit payload, no inline dicts
+# ---------------------------------------------------------------------------
+
+
+def _insert_decision_cycle_row(
+    session: Session,
+    cycle_row_id: uuid.UUID,
+    record: CycleAuditRecord,
+) -> None:
+    row = DecisionCycleRow(
+        id=cycle_row_id,
+        trigger_type=record.trigger_type,
+        trigger_ref=record.correlation_id,
+        started_at=record.decision_ts,
+        outcome=record.outcome,
+    )
+    session.add(row)
+
+
+def _research_done_payload(record: CycleAuditRecord) -> dict[str, Any]:
+    return {
+        "correlation_id": record.correlation_id,
+        "symbol": record.symbol,
+        "recommendation": record.recommendation,
+        "conviction": record.conviction,
+    }
+
+
+def _decision_made_payload(record: CycleAuditRecord) -> dict[str, Any]:
+    return {
+        "correlation_id": record.correlation_id,
+        "symbol": record.symbol,
+        "recommendation": record.recommendation,
+        "conviction": record.conviction,
+        "decision_ts": record.decision_ts.isoformat(),
+    }
+
+
+def _risk_outcome_payload(record: CycleAuditRecord) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "correlation_id": record.correlation_id,
+        "symbol": record.symbol,
+        "outcome": record.outcome,
+    }
+    if record.trade_id is not None:
+        payload["trade_id"] = str(record.trade_id)
+    return payload
+
+
+def _cycle_outcome_payload(
+    record: CycleAuditRecord,
+    cycle_row_id: uuid.UUID,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "correlation_id": record.correlation_id,
+        "symbol": record.symbol,
+        "outcome": record.outcome,
+        "cycle_row_id": str(cycle_row_id),
+        "decision_ts": record.decision_ts.isoformat(),
+    }
+    if record.judge_score is not None:
+        payload["judge_score"] = record.judge_score
+    if record.alignment is not None:
+        payload["alignment"] = record.alignment
+    if record.trade_id is not None:
+        payload["trade_id"] = str(record.trade_id)
     return payload

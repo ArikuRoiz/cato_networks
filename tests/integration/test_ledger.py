@@ -28,8 +28,8 @@ from sqlalchemy.engine import Engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 from firm.domain import Trade, TradeStatus
-from firm.persistence.ledger import LedgerRepository
-from firm.persistence.models import ApprovalRow, AuditLogRow
+from firm.persistence.ledger import CycleAuditRecord, LedgerRepository
+from firm.persistence.models import ApprovalRow, AuditLogRow, DecisionCycleRow
 
 # ---------------------------------------------------------------------------
 # Project-root anchor (works regardless of caller cwd)
@@ -388,3 +388,119 @@ def test_record_approval_includes_edited_qty_when_provided(migrated_engine: Engi
         payload = audit_rows[0].payload
         assert payload["edited_qty"] == "3"
         assert payload["status"] == "edited"
+
+
+# ---------------------------------------------------------------------------
+# test_record_cycle_hold_writes_decision_cycle_and_audit_entries
+# ---------------------------------------------------------------------------
+
+
+def test_record_cycle_hold_writes_decision_cycle_and_audit_entries(
+    migrated_engine: Engine,
+) -> None:
+    """A Hold cycle must write one decision_cycles row and four audit_log entries.
+
+    This is the key auditability invariant: every cycle leaves a trace, regardless
+    of outcome.  Hold cycles previously wrote zero rows (the bug this fixes).
+
+    Steps:
+      1. Build a CycleAuditRecord with outcome="hold" and no trade_id.
+      2. Call record_cycle on a LedgerRepository.
+      3. Assert one DecisionCycleRow exists with correct trigger_ref and outcome.
+      4. Assert exactly four AuditLogRow entries exist for the correlation_id:
+           research.done, decision.made, risk.outcome, cycle.outcome.
+      5. Assert cycle.outcome payload carries the symbol and outcome; no trade_id key.
+    """
+    from sqlalchemy.orm import Session
+
+    correlation_id = str(uuid.uuid4())
+    decision_ts = datetime(2024, 10, 21, 10, 0, 0, tzinfo=UTC)
+    repo = LedgerRepository(migrated_engine)
+
+    record = CycleAuditRecord(
+        correlation_id=correlation_id,
+        symbol="NVDA",
+        trigger_type="scheduled",
+        decision_ts=decision_ts,
+        recommendation="hold",
+        conviction=0.45,
+        outcome="hold",
+        judge_score=3,
+        alignment="partial",
+        trade_id=None,
+    )
+    repo.record_cycle(record)
+
+    with Session(migrated_engine) as session:
+        # One decision_cycles row
+        cycle_rows = session.query(DecisionCycleRow).filter_by(trigger_ref=correlation_id).all()
+        assert len(cycle_rows) == 1, (
+            f"Expected 1 DecisionCycleRow for correlation_id={correlation_id}, "
+            f"got {len(cycle_rows)}"
+        )
+        cycle_row = cycle_rows[0]
+        assert cycle_row.trigger_type == "scheduled"
+        assert cycle_row.outcome == "hold"
+
+        # Four audit_log entries
+        correlation_uuid = uuid.UUID(correlation_id)
+        audit_rows = session.query(AuditLogRow).filter_by(correlation_id=correlation_uuid).all()
+        actions = {row.action for row in audit_rows}
+        expected_actions = {"research.done", "decision.made", "risk.outcome", "cycle.outcome"}
+        assert actions == expected_actions, (
+            f"Expected audit actions {expected_actions}, got {actions}"
+        )
+
+        # cycle.outcome payload has key fields and no trade_id (this is a hold)
+        outcome_rows = [r for r in audit_rows if r.action == "cycle.outcome"]
+        assert len(outcome_rows) == 1
+        payload = outcome_rows[0].payload
+        assert payload["symbol"] == "NVDA"
+        assert payload["outcome"] == "hold"
+        assert payload["judge_score"] == 3
+        assert payload["alignment"] == "partial"
+        assert "trade_id" not in payload, "Hold cycle must not have trade_id in payload"
+
+
+def test_record_cycle_filled_writes_trade_id_in_payload(migrated_engine: Engine) -> None:
+    """A filled cycle must include trade_id in the cycle.outcome audit payload.
+
+    The correlation_id ↔ trade_id link is what makes `make trace TRADE=<id>` work.
+    """
+    from sqlalchemy.orm import Session
+
+    correlation_id = str(uuid.uuid4())
+    trade_id = uuid.uuid4()
+    decision_ts = datetime(2024, 10, 22, 14, 30, 0, tzinfo=UTC)
+    repo = LedgerRepository(migrated_engine)
+
+    record = CycleAuditRecord(
+        correlation_id=correlation_id,
+        symbol="AAPL",
+        trigger_type="event",
+        decision_ts=decision_ts,
+        recommendation="strong_buy",
+        conviction=0.85,
+        outcome="filled",
+        judge_score=5,
+        alignment="aligned",
+        trade_id=trade_id,
+    )
+    repo.record_cycle(record)
+
+    with Session(migrated_engine) as session:
+        cycle_rows = session.query(DecisionCycleRow).filter_by(trigger_ref=correlation_id).all()
+        assert len(cycle_rows) == 1
+        assert cycle_rows[0].outcome == "filled"
+
+        correlation_uuid = uuid.UUID(correlation_id)
+        outcome_rows = (
+            session.query(AuditLogRow)
+            .filter_by(correlation_id=correlation_uuid, action="cycle.outcome")
+            .all()
+        )
+        assert len(outcome_rows) == 1
+        payload = outcome_rows[0].payload
+        assert payload["trade_id"] == str(trade_id), (
+            "Filled cycle must link trade_id in cycle.outcome payload for trace queries"
+        )

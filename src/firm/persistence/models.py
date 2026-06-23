@@ -147,10 +147,29 @@ class ApprovalRow(Base):
     __table_args__ = (Index("ix_approvals_trade_id", "trade_id"),)
 
 
-# NOTE: The ``decision_cycles`` and ``evidence`` tables are created by
-# migrations/versions/0001_initial.py but no Python code reads or writes them
-# via ORM at this time.  The ORM classes have been removed as dead code.
-# Re-add them here when a writer (e.g. a cycle-audit service) is implemented.
+# ---------------------------------------------------------------------------
+# DecisionCycleRow — one row per pipeline cycle, written by the reporting node
+# ---------------------------------------------------------------------------
+
+
+class DecisionCycleRow(Base):
+    """Persistent record of a single decision cycle, regardless of outcome.
+
+    Columns match the ``decision_cycles`` table created in migration 0001.
+    ``trigger_ref`` carries the correlation_id string for cross-table tracing.
+    ``outcome`` is a CycleOutcome string (filled/hold/rejected/…).
+    """
+
+    __tablename__ = "decision_cycles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trigger_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    trigger_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    outcome: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (Index("ix_decision_cycles_started_at", "started_at"),)
+
 
 # ---------------------------------------------------------------------------
 # AuditLogRow — append-only (no update/delete methods exposed on this model)

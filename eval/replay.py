@@ -50,6 +50,7 @@ from firm.domain import Holding, Lot, Portfolio, RiskPolicy, Trade, TradeStatus
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.orchestration.graph import build_graph
 from firm.orchestration.nodes import NodePorts
+from firm.persistence.ledger import CycleAuditRecord
 from firm.ports.llm import LLM
 from firm.ports.types import NewsDoc
 
@@ -175,6 +176,7 @@ class _FakeLedger:
         self._portfolio_id = portfolio_id
         self._trades: list[Trade] = []
         self.approvals: list[_ApprovalRecord] = []
+        self.cycles: list[CycleAuditRecord] = []
 
     def get_portfolio(self, portfolio_id: uuid.UUID) -> Portfolio:
         return self._portfolio
@@ -233,6 +235,10 @@ class _FakeLedger:
                 decided_by=decided_by,
             )
         )
+
+    def record_cycle(self, record: CycleAuditRecord) -> None:
+        """Capture a decision cycle record in memory for offline eval and testing."""
+        self.cycles.append(record)
 
 
 def _apply_buy(
