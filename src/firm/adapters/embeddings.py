@@ -13,7 +13,6 @@ Deterministic: identical inputs always produce identical vectors.
 from __future__ import annotations
 
 _MODEL_NAME: str = "all-MiniLM-L6-v2"
-EMBEDDING_DIM: int = 384
 
 
 class SentenceTransformerEmbedder:

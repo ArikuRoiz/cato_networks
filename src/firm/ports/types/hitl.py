@@ -65,18 +65,6 @@ class HITLRequest(BaseModel):
             bear_case=_opt_str(research_plan.get("bear_summary")),
         )
 
-    @property
-    def has_research_context(self) -> bool:
-        """True when the research_plan fields have been populated."""
-        return self.recommendation is not None
-
-    @property
-    def conviction_pct(self) -> str:
-        """Conviction as a formatted percentage string, e.g. '100%'."""
-        if self.conviction is None:
-            return "-"
-        return f"{self.conviction * 100:.0f}%"
-
 
 class ApprovalResult(BaseModel):
     status: ApprovalStatus

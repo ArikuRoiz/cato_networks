@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 from uuid import uuid4
 
 from firm.domain import Bar
@@ -25,6 +26,37 @@ from firm.ports.types import (
     ToolDef,
     ToolExecutors,
 )
+
+# Minimal placeholder values used to satisfy a required JSON-schema field when
+# the schema supplies no default. Kept deliberately small and type-correct.
+_PLACEHOLDER_BY_TYPE: dict[str, Any] = {
+    "string": "test",
+    "integer": 1,
+    "number": 1.0,
+    "boolean": True,
+    "array": [],
+    "object": {},
+}
+
+
+def _minimal_args_for_schema(input_schema: dict[str, Any]) -> dict[str, Any]:
+    """Derive a minimal valid argument dict from a tool's JSON ``input_schema``.
+
+    Every required property is given either its declared ``default`` or a
+    type-appropriate placeholder; optional properties are omitted so the
+    executor falls back to its own defaults (mirroring a real tool call).
+    """
+    properties: dict[str, Any] = input_schema.get("properties", {})
+    required: list[str] = input_schema.get("required", [])
+    args: dict[str, Any] = {}
+    for name in required:
+        spec = properties.get(name, {})
+        if "default" in spec:
+            args[name] = spec["default"]
+        else:
+            args[name] = _PLACEHOLDER_BY_TYPE.get(spec.get("type", "string"), "test")
+    return args
+
 
 # ---------------------------------------------------------------------------
 # FakeCalendar
@@ -174,18 +206,19 @@ class FakeLLM:
         max_tokens: int,
         max_rounds: int = 5,
     ) -> LLMResponse | LLMError:
-        """Simulate one tool-call round per executor, then return the queued response.
+        """Simulate one tool-call round per tool, then return the queued response.
 
-        Calls each registered executor once with a generic ``{"query": "test"}``
-        args dict so that side effects (e.g. populating a chunk registry) occur
-        before the final response is returned.  This mirrors what a real LLM
-        tool-loop would do on the first call round.
+        Each tool's executor is invoked once with arguments derived from the
+        tool's ``input_schema`` (defaults / required fields → minimal valid args),
+        so side effects (e.g. populating a chunk registry) occur before the final
+        response is returned. This mirrors a real LLM tool-loop's first round.
+
+        Executor errors are not swallowed — they surface so tests fail loudly.
         """
-        for _name, fn in executors.items():
-            try:
-                fn({"query": "test", "k": 5})
-            except Exception:
-                pass
+        schema_by_name = {tool.name: tool.input_schema for tool in tools}
+        for name, fn in executors.items():
+            schema = schema_by_name.get(name, {})
+            fn(_minimal_args_for_schema(schema))
         return self.complete(messages, model=model, max_tokens=max_tokens)
 
     def count_tokens(

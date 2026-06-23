@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
 
 from pydantic import BaseModel, field_validator
 
@@ -232,13 +231,3 @@ def compute_nav_and_pnl(
     equity = sum(qty * cost for _, qty, cost in holdings)
     nav = cash + equity
     return nav, nav - initial_cash
-
-
-# ---------------------------------------------------------------------------
-# UUID validation helper (used by routers)
-# ---------------------------------------------------------------------------
-
-
-def parse_uuid(value: str) -> UUID:
-    """Parse *value* as UUID; raises ValueError on invalid input."""
-    return UUID(value)

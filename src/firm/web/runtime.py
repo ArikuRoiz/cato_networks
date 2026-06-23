@@ -18,11 +18,14 @@ Public API:
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Types
@@ -111,6 +114,7 @@ def pending_approvals(live_graph: LiveGraph) -> list[InterruptedThread]:
     try:
         return _scan_via_registry(live_graph)
     except Exception:
+        logger.exception("pending_approvals scan failed; returning no pending threads")
         return []
 
 
@@ -265,28 +269,9 @@ def _build_ports(
 
 
 def _safe_load_risk_policy(root: Path) -> Any:
-    from firm.config.settings import RiskPolicyConfig, load_risk_policy
+    from firm.config.settings import load_risk_policy_or_default
 
-    policy_path = root / "config" / "risk_policy.yaml"
-    if policy_path.exists():
-        try:
-            return load_risk_policy(policy_path)
-        except Exception:
-            pass
-    return RiskPolicyConfig(
-        max_trade_notional_pct=0.10,
-        max_name_concentration_pct=0.25,
-        daily_loss_halt_pct=0.03,
-        hitl_threshold_pct=0.05,
-        buy_threshold=0.05,
-        sell_threshold=-0.05,
-        momentum_weight=0.6,
-        sentiment_weight=0.4,
-        momentum_lookback_days=5,
-        max_events_per_symbol_per_hour=3,
-        event_relevance_threshold=0.7,
-        token_budget_per_cycle=50000,
-    )
+    return load_risk_policy_or_default(root / "config" / "risk_policy.yaml")
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +313,7 @@ def _inspect_thread(
     try:
         run_state = graph.get_state(config)
     except Exception:
+        logger.debug("get_state failed for thread %s; skipping", thread_id, exc_info=True)
         return None
     return _extract_interrupt(thread_id, run_state, correlation_id, symbol)
 
@@ -378,7 +364,7 @@ def _unregister_pending_run(live_graph: LiveGraph, thread_id: str) -> None:
     try:
         ledger.delete_pending_run(thread_id)
     except Exception:
-        pass
+        logger.warning("Failed to unregister pending run %s", thread_id, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +437,7 @@ def run_cycle_background(
         for _event in live_graph.graph.stream(initial_state, config=config, stream_mode="values"):
             pass
     except Exception:
-        pass
+        logger.exception("Background cycle for %s (thread %s) failed", symbol, thread_id)
     finally:
         reset_correlation_id(token)
 
@@ -494,4 +480,4 @@ def _register_pending_run(
             symbol=symbol,
         )
     except Exception:
-        pass
+        logger.warning("Failed to register pending run %s", thread_id, exc_info=True)

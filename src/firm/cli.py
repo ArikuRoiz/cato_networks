@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,6 +38,8 @@ from firm.ports.llm import LLM
 
 if TYPE_CHECKING:
     from firm.config.settings import RiskPolicyConfig, Settings
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -239,35 +242,6 @@ def _build_evidence_store(corpus_path: Path) -> Any:
     return store
 
 
-def _build_agents(
-    root: Path,
-    risk_policy_config: RiskPolicyConfig,
-    guardrail: Any,
-    injection_guard: Any,
-    ledger: Any,
-) -> tuple[Any, Any, Any, Any]:
-    """Construct the pipeline agents. Returns (research, risk, execution, reporting).
-
-    The Portfolio Manager agent has been dissolved — sizing is now handled by
-    the deterministic ``size_position`` tool inside the graph's ``pm`` node.
-    """
-    from firm.adapters.fakes import FakeReportSink
-    from firm.agents.execution import ExecutionAgent
-    from firm.agents.reporting import ReportingAgent
-    from firm.agents.research import ResearchAgent
-    from firm.agents.risk import RiskAgent
-
-    evidence_store = _build_evidence_store(root / "data" / "news" / "corpus.json")
-    llm = _build_demo_llm(root / "data" / "cassettes" / "eval.jsonl")
-
-    return (
-        ResearchAgent(evidence=evidence_store, llm=llm, injection_guard=injection_guard),
-        RiskAgent(risk=risk_policy_config),
-        ExecutionAgent(ledger=ledger, guardrail=guardrail),
-        ReportingAgent(report_sink=FakeReportSink(), ledger=ledger),
-    )
-
-
 def _build_pipeline(root: Path, initial_cash: Any) -> tuple[Any, Any, Any]:
     """Wire all agents + LangGraph graph for demo and dev commands.
 
@@ -409,9 +383,7 @@ def _invoke_one_symbol(
 
             _traced_cycle()
         except ImportError as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("Langfuse unavailable, running untraced: %s", exc)
+            logger.warning("Langfuse unavailable, running untraced: %s", exc)
             try:
                 final_state = graph.invoke(initial_state, config=config)
                 _emit_cycle_done(symbol, correlation_id, final_state)
@@ -459,28 +431,9 @@ def _build_demo_llm(cassette_path: Path) -> LLM:
 
 def _safe_load_risk_policy(root: Path) -> RiskPolicyConfig:
     """Load risk policy from YAML, returning defaults on failure."""
-    from firm.config.settings import RiskPolicyConfig, load_risk_policy
+    from firm.config.settings import load_risk_policy_or_default
 
-    policy_path = root / "config" / "risk_policy.yaml"
-    if policy_path.exists():
-        try:
-            return load_risk_policy(policy_path)
-        except Exception:
-            pass
-    return RiskPolicyConfig(
-        max_trade_notional_pct=0.10,
-        max_name_concentration_pct=0.25,
-        daily_loss_halt_pct=0.03,
-        hitl_threshold_pct=0.05,
-        buy_threshold=0.05,
-        sell_threshold=-0.05,
-        momentum_weight=0.6,
-        sentiment_weight=0.4,
-        momentum_lookback_days=5,
-        max_events_per_symbol_per_hour=3,
-        event_relevance_threshold=0.7,
-        token_budget_per_cycle=50000,
-    )
+    return load_risk_policy_or_default(root / "config" / "risk_policy.yaml")
 
 
 def _summarise(value: Any) -> str:
@@ -1006,6 +959,7 @@ def _query_audit_log(trade_id: str, database_url: str) -> list[dict[str, Any]]:
         rows = _fetch_audit_rows(_normalise_database_url(database_url), trade_id)
         return [dict(row) for row in rows]
     except Exception:
+        logger.warning("Audit-log query for trade %s failed", trade_id, exc_info=True)
         return []
 
 

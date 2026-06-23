@@ -607,7 +607,7 @@ def _load_portfolio_snapshot(settings: Any) -> dict[str, Any]:
                 if bar is not None:
                     prices[sym] = Decimal(str(bar.close))
             except Exception:
-                pass
+                logger.warning("Failed to fetch price for %s; omitting from NAV", sym, exc_info=True)
     nav = portfolio.nav(prices)
     cash = portfolio.cash
     pnl = nav - cash  # simplified: NAV - cash = unrealised P&L contribution

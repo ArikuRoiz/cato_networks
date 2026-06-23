@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
 
 HITLMode = Literal["always", "threshold"]
 
@@ -179,6 +182,38 @@ def load_risk_policy(
         event_relevance_threshold=float(raw["event_relevance_threshold"]),
         token_budget_per_cycle=int(raw["token_budget_per_cycle"]),
     )
+
+
+def default_risk_policy() -> RiskPolicyConfig:
+    """Return the conservative built-in risk policy used when YAML is unavailable."""
+    return RiskPolicyConfig(
+        max_trade_notional_pct=0.10,
+        max_name_concentration_pct=0.25,
+        daily_loss_halt_pct=0.03,
+        hitl_threshold_pct=0.05,
+        buy_threshold=0.05,
+        sell_threshold=-0.05,
+        momentum_weight=0.6,
+        sentiment_weight=0.4,
+        momentum_lookback_days=5,
+        max_events_per_symbol_per_hour=3,
+        event_relevance_threshold=0.7,
+        token_budget_per_cycle=50000,
+    )
+
+
+def load_risk_policy_or_default(path: Path) -> RiskPolicyConfig:
+    """Load risk policy from *path*, falling back to :func:`default_risk_policy`.
+
+    Returns the built-in defaults when *path* is absent or fails to parse; the
+    parse failure is logged so a malformed YAML does not silently degrade.
+    """
+    if path.exists():
+        try:
+            return load_risk_policy(path)
+        except Exception:
+            logger.warning("Failed to load risk policy from %s; using defaults", path, exc_info=True)
+    return default_risk_policy()
 
 
 # ---------------------------------------------------------------------------

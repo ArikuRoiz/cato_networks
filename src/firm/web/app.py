@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -25,26 +25,7 @@ from firm.web.queries import (
 )
 from firm.web.schemas import ApprovalRequest, RunRequest
 
-if TYPE_CHECKING:
-    from sqlalchemy.engine import Engine
-
 _HERE = Path(__file__).parent
-
-# ---------------------------------------------------------------------------
-# App state container — typed, not a dict
-# ---------------------------------------------------------------------------
-
-
-class _AppState:
-    """Holds shared resources available across request lifetimes."""
-
-    engine: Engine
-    portfolio_id: uuid.UUID
-
-    def __init__(self, engine: Engine, portfolio_id: uuid.UUID) -> None:
-        self.engine = engine
-        self.portfolio_id = portfolio_id
-
 
 # ---------------------------------------------------------------------------
 # App factory

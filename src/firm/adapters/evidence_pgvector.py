@@ -47,7 +47,6 @@ from firm.rag.reranker import rerank
 # Constants
 # ---------------------------------------------------------------------------
 
-_EMBEDDING_DIM: int = 384
 _MAX_CHUNK_WORDS: int = 512
 
 # Module-level embedder — instantiated once, model weights loaded on first use.

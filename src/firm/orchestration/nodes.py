@@ -1095,25 +1095,6 @@ def _deserialise_research_plan(raw: dict[str, Any] | None) -> Any:
         return None
 
 
-def _deserialise_technical_signal(raw: dict[str, Any] | None) -> Any:
-    """Deserialise technical_signal dict to TechnicalSignal or TechnicalUnavailable."""
-    from firm.agents.technical import TechnicalSignal, TechnicalUnavailable
-
-    if raw is None:
-        return None
-    if "bias" in raw:
-        try:
-            return TechnicalSignal.model_validate(raw)
-        except Exception:
-            logger.exception("Failed to deserialise TechnicalSignal: %r", raw)
-    if "reason" in raw:
-        try:
-            return TechnicalUnavailable.model_validate(raw)
-        except Exception:
-            logger.exception("Failed to deserialise TechnicalUnavailable: %r", raw)
-    return None
-
-
 def _deserialise_evidence(raw: dict[str, Any] | None) -> Any:
     """Deserialise evidence dict to Evidence or Refusal."""
     from firm.agents.research import Evidence, Refusal

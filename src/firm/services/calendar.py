@@ -23,8 +23,6 @@ _UTC = UTC
 # handled by the seconds-precision checks in is_market_open).
 _OPEN_HOUR = 9
 _OPEN_MINUTE = 30
-_CLOSE_HOUR = 16
-_CLOSE_MINUTE = 0
 
 # pandas_market_calendars schedule() requires a date-string window.
 # We fetch a two-week lookahead so next_open() can always find an answer
