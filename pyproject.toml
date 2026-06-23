@@ -24,6 +24,7 @@ dependencies = [
   "pyarrow>=16.0",
   "pyyaml>=6.0",
   "yfinance>=0.2",
+  "sentence-transformers>=5.6.0",
 ]
 
 [project.optional-dependencies]
@@ -81,6 +82,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["langfuse", "langfuse.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["sentence_transformers", "sentence_transformers.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

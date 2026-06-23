@@ -1,14 +1,14 @@
 """Concrete EvidenceStore backed by Postgres + pgvector.
 
 Implements the ``EvidenceStore`` port (``firm.ports.evidence``) using a
-``news_chunks`` table with a ``vector(1024)`` column for dense retrieval.
+``news_chunks`` table with a ``vector(384)`` column for dense retrieval.
 
 Embedding strategy:
-  - Checks for ``ANTHROPIC_API_KEY`` (the project's standard credential).
-  - The Anthropic SDK does not expose a text-embeddings endpoint, so a
-    random unit vector is always generated instead.  This is suitable for
-    CI and offline tests.  Swap ``_embed`` for a real embedding call when
-    an embeddings-capable model becomes available via the Anthropic API.
+  - Uses :class:`firm.adapters.embeddings.SentenceTransformerEmbedder` with
+    ``all-MiniLM-L6-v2`` (384-dim) for deterministic local embeddings.
+  - The embedder is module-level and lazy-loaded: the model weights are
+    pulled from disk only on the first ``embed_and_store`` or ``search`` call,
+    keeping import time negligible.
 
 Chunking:
   - Text is split into ≤512 token pieces (approximated as ≤512 words, which
@@ -32,9 +32,6 @@ Transaction responsibility:
 from __future__ import annotations
 
 import hashlib
-import math
-import os
-import random
 import uuid
 from datetime import datetime
 from typing import Any
@@ -42,6 +39,7 @@ from typing import Any
 import psycopg
 from pgvector.psycopg import register_vector
 
+from firm.adapters.embeddings import SentenceTransformerEmbedder
 from firm.ports.types import Chunk, NewsDoc
 from firm.rag.reranker import rerank
 
@@ -49,8 +47,11 @@ from firm.rag.reranker import rerank
 # Constants
 # ---------------------------------------------------------------------------
 
-_EMBEDDING_DIM: int = 1024
+_EMBEDDING_DIM: int = 384
 _MAX_CHUNK_WORDS: int = 512
+
+# Module-level embedder — instantiated once, model weights loaded on first use.
+_embedder: SentenceTransformerEmbedder = SentenceTransformerEmbedder()
 
 
 # ---------------------------------------------------------------------------
@@ -58,33 +59,14 @@ _MAX_CHUNK_WORDS: int = 512
 # ---------------------------------------------------------------------------
 
 
-def _random_unit_vector(dim: int = _EMBEDDING_DIM) -> list[float]:
-    """Return a random unit vector of length *dim*.
-
-    Values are drawn from the global random state; each call produces an
-    independent vector.  This is intentional for the test fallback — callers
-    that need deterministic vectors should set a seed before calling or supply
-    their own embedding function.
-    """
-    vec = [random.gauss(0.0, 1.0) for _ in range(dim)]
-    magnitude = math.sqrt(sum(x * x for x in vec))
-    if magnitude == 0.0:
-        vec[0] = 1.0
-        return vec
-    return [x / magnitude for x in vec]
-
-
 def _embed(text: str) -> list[float]:
-    """Embed *text*, returning a random unit vector.
+    """Embed *text* using the local sentence-transformer model.
 
-    Checks ``ANTHROPIC_API_KEY`` for the project's standard credential.
-    Because the Anthropic SDK does not expose a text-embeddings endpoint,
-    a random unit vector is returned unconditionally.  This is suitable for
-    CI and integration tests; replace this function body when an
-    embeddings-capable model becomes available via the Anthropic API.
+    Delegates to the module-level :data:`_embedder` (``all-MiniLM-L6-v2``).
+    Returns a 384-dimensional unit-normalised vector.  Deterministic: the same
+    input always produces the same output.
     """
-    _ = os.environ.get("ANTHROPIC_API_KEY", "")
-    return _random_unit_vector()
+    return _embedder.embed(text)
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +107,7 @@ CREATE TABLE IF NOT EXISTS news_chunks (
     source_url  TEXT        NOT NULL,
     chunk_id    TEXT        NOT NULL,
     published_at TIMESTAMPTZ NOT NULL,
-    embedding   vector(1024) NOT NULL,
+    embedding   vector(384) NOT NULL,
     UNIQUE (chunk_id)
 );
 

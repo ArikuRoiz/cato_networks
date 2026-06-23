@@ -1,5 +1,6 @@
 """Concrete implementations of the port interfaces, plus in-memory fakes for testing."""
 
+from firm.adapters.embeddings import SentenceTransformerEmbedder
 from firm.adapters.evidence_pgvector import PgvectorEvidenceStore
 from firm.adapters.fakes import (
     FakeEvidenceStore,
@@ -16,6 +17,7 @@ from firm.adapters.report import ExcelReportSink, FileReportSink, SlackReportSin
 __all__ = [
     "MODEL_MAP",
     "AnthropicLLM",
+    "SentenceTransformerEmbedder",
     "CassetteLLM",
     "CassetteNotFound",
     "ExcelReportSink",

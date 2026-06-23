@@ -8,7 +8,10 @@ PgvectorEvidenceStore against acceptance-criteria scenarios from FIRM-9:
 
 These tests remove the xfail stubs from tests/integration/test_mandatory.py.
 
-Requires: testcontainers[postgres], psycopg[binary], pgvector.
+Requires: testcontainers[postgres], psycopg[binary], pgvector, sentence-transformers.
+The sentence-transformers model (all-MiniLM-L6-v2) must be downloadable or
+already cached.  If the model cannot be loaded the entire module is skipped
+with a clear reason rather than failing with an obscure import error.
 """
 
 from __future__ import annotations
@@ -24,6 +27,26 @@ from testcontainers.postgres import PostgresContainer  # type: ignore[import-unt
 from firm.adapters.evidence_pgvector import PgvectorEvidenceStore
 from firm.ports.types import NewsDoc
 from firm.rag.citation import Insufficient, cite
+
+# ---------------------------------------------------------------------------
+# Guard: verify the embedding model can actually be loaded before spending
+# time spinning up a Postgres container.  Skip the whole module cleanly if
+# the model weights are unavailable (e.g. air-gapped CI without a cache).
+# ---------------------------------------------------------------------------
+
+_EMBEDDER_SKIP_REASON: str | None = None
+
+try:
+    from firm.adapters.embeddings import SentenceTransformerEmbedder as _SE
+
+    _SE().embed("warmup")  # triggers lazy load; raises if weights missing
+except Exception as _exc:  # noqa: BLE001
+    _EMBEDDER_SKIP_REASON = f"sentence-transformers model unavailable: {_exc}"
+
+pytestmark = pytest.mark.skipif(
+    _EMBEDDER_SKIP_REASON is not None,
+    reason=_EMBEDDER_SKIP_REASON or "",
+)
 
 # ---------------------------------------------------------------------------
 # Session-scoped Postgres + pgvector container
