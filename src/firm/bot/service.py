@@ -454,10 +454,7 @@ class BotService:
             return []
 
     def _send_text(self, chat_id: int, text: str) -> None:
-        try:
-            self._call("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
-        except Exception:
-            logger.exception("sendMessage failed")
+        self._send_message({"chat_id": chat_id, "text": text})
 
     def _send_message_with_keyboard(
         self,
@@ -465,18 +462,25 @@ class BotService:
         text: str,
         keyboard: list[list[dict[str, str]]],
     ) -> None:
+        self._send_message(
+            {"chat_id": chat_id, "text": text, "reply_markup": {"inline_keyboard": keyboard}}
+        )
+
+    def _send_message(self, payload: dict[str, Any]) -> None:
+        """Send a message, trying Markdown then falling back to plain text.
+
+        LLM-authored text (rationale/pros/cons) can contain characters that break
+        Telegram's Markdown parser (a stray ``*``/``_``/``[`` etc.), returning HTTP
+        400. Rather than lose the message, resend without ``parse_mode`` so the card
+        always lands — formatting just degrades to plain text.
+        """
         try:
-            self._call(
-                "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": text,
-                    "parse_mode": "Markdown",
-                    "reply_markup": {"inline_keyboard": keyboard},
-                },
-            )
+            self._call("sendMessage", {**payload, "parse_mode": "Markdown"})
         except Exception:
-            logger.exception("sendMessage (with keyboard) failed")
+            try:
+                self._call("sendMessage", payload)
+            except Exception:
+                logger.exception("sendMessage failed (markdown and plain text)")
 
     def _answer_callback(self, callback_query_id: str, text: str) -> None:
         try:

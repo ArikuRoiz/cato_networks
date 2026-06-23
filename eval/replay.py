@@ -145,6 +145,13 @@ def _run_cycle(
 
     try:
         final_state: dict[str, Any] = graph.invoke(initial_state, config=config)
+        # always-HITL pauses the graph at the risk node every cycle. A backtest has
+        # no human, so auto-approve the desk's recommendation and run to completion
+        # (this is what makes synthesis/judge run and trades fill in the eval).
+        if graph.get_state(config).next:
+            from firm.orchestration.hitl import resume_decision
+
+            final_state = resume_decision(graph, thread_id, "approve")
     except Exception:
         return _make_record(
             cycle_id=correlation_id,
