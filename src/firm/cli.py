@@ -235,23 +235,23 @@ def _build_agents(
     guardrail: Any,
     injection_guard: Any,
     ledger: Any,
-) -> tuple[Any, Any, Any, Any, Any]:
-    """Construct the five pipeline agents. Returns (research, pm, risk, execution, reporting)."""
+) -> tuple[Any, Any, Any, Any]:
+    """Construct the pipeline agents. Returns (research, risk, execution, reporting).
+
+    The Portfolio Manager agent has been dissolved — sizing is now handled by
+    the deterministic ``size_position`` tool inside the graph's ``pm`` node.
+    """
     from firm.adapters.fakes import FakeReportSink
-    from firm.adapters.market_data_frozen import FrozenMarketData
     from firm.agents.execution import ExecutionAgent
-    from firm.agents.portfolio_manager import PortfolioManagerAgent
     from firm.agents.reporting import ReportingAgent
     from firm.agents.research import ResearchAgent
     from firm.agents.risk import RiskAgent
 
-    market_data = FrozenMarketData(root / "data" / "bars")
     evidence_store = _build_evidence_store(root / "data" / "news" / "corpus.json")
     llm = _build_demo_llm(root / "data" / "cassettes" / "eval.jsonl")
 
     return (
         ResearchAgent(evidence=evidence_store, llm=llm, injection_guard=injection_guard),
-        PortfolioManagerAgent(market_data=market_data, risk=risk_policy_config, llm=None),
         RiskAgent(risk=risk_policy_config),
         ExecutionAgent(ledger=ledger, guardrail=guardrail),
         ReportingAgent(report_sink=FakeReportSink(), ledger=ledger),

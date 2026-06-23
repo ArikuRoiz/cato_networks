@@ -35,7 +35,7 @@ from firm.agents.bear_researcher import BearFailure, BearInput, BearResearcherAg
 from firm.agents.bull_researcher import BullFailure, BullInput, BullResearcherAgent
 from firm.agents.execution import ExecutionAgent, ExecutionInput
 from firm.agents.judge import JudgeAgent, JudgeFailure, JudgeInput
-from firm.agents.portfolio_manager import PMInput, PortfolioManagerAgent
+from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
 from firm.agents.reporting import ReportingAgent, ReportingInput
 from firm.agents.research import ResearchAgent, ResearchInput
 from firm.agents.research_manager import (
@@ -49,7 +49,7 @@ from firm.agents.synthesis import SynthesisInput, SynthesisReportAgent
 from firm.agents.technical import TechnicalAnalysisAgent, TechnicalInput
 from firm.config.settings import RiskPolicyConfig
 from firm.domain import Portfolio
-from firm.domain.enums import CycleOutcome, HITLStatus, RefusalReason
+from firm.domain.enums import CycleOutcome, HITLStatus, Recommendation, RefusalReason
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.orchestration.state import GraphState
 from firm.persistence.ledger import LedgerRepository
@@ -57,6 +57,7 @@ from firm.ports.evidence import EvidenceStore
 from firm.ports.llm import LLM
 from firm.ports.market_data import MarketDataSource
 from firm.ports.report import ReportSink
+from firm.tools.size_position import size_position, trade_side_from_recommendation
 from firm.utils import str_to_uuid
 
 logger = logging.getLogger(__name__)
@@ -115,37 +116,72 @@ def make_research_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any
 
 
 # ---------------------------------------------------------------------------
-# Portfolio Manager node
+# Sizing node (replaces PortfolioManagerAgent — deterministic, no LLM)
 # ---------------------------------------------------------------------------
 
 
 def make_pm_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
-    """Return a ``pm_node`` closed over injected ports."""
-    agent = PortfolioManagerAgent(
-        market_data=ports.market_data,
-        risk=ports.risk_policy,
-    )
+    """Return a deterministic sizing node closed over injected ports.
+
+    Consumes the Research Manager's ``ResearchPlan`` (recommendation + conviction),
+    fetches the current bar price via market_data, computes NAV from the portfolio,
+    and calls ``size_position`` to produce a ``TradeProposal | Hold``.
+
+    No LLM is invoked here — the Research Manager is the sole direction-decider.
+    """
 
     def pm_node(state: GraphState) -> dict[str, Any]:
         symbol = state.get("symbol", "")
         decision_ts_str = state.get("decision_ts", "")
-        correlation_id = state.get("correlation_id", "")
         decision_ts = _parse_datetime(decision_ts_str)
-        evidence_raw = state.get("evidence")
-        evidence = _deserialise_evidence(evidence_raw)
-        technical = _deserialise_technical_signal(state.get("technical_signal"))
         research_plan = _deserialise_research_plan(state.get("research_plan"))
-        inp = PMInput(
-            symbol=symbol,
-            evidence=evidence,
-            portfolio=ports.portfolio,
-            decision_ts=decision_ts,
-            correlation_id=correlation_id,
-            technical_signal=technical,
-            research_plan=research_plan,
+
+        if research_plan is None:
+            hold = Hold(symbol=symbol, reason="research_plan unavailable")
+            return {"trade_proposal": hold.model_dump(mode="json")}
+
+        recommendation: Recommendation = research_plan.recommendation
+        conviction: float = research_plan.conviction
+
+        bar = ports.market_data.get_bar(symbol, decision_ts)
+        if bar is None:
+            hold = Hold(symbol=symbol, reason="no market data for sizing")
+            return {"trade_proposal": hold.model_dump(mode="json")}
+
+        prices = {symbol: bar.close}
+        for sym, holding in ports.portfolio.holdings.items():
+            if sym not in prices:
+                prices[sym] = holding.avg_cost
+        nav = ports.portfolio.nav(prices)
+
+        qty = size_position(
+            recommendation=recommendation,
+            conviction=conviction,
+            nav=nav,
+            price=bar.close,
+            max_trade_notional_pct=ports.risk_policy.max_trade_notional_pct,
         )
-        result = agent.run(inp)
-        return {"trade_proposal": result.model_dump(mode="json")}
+
+        if qty < Decimal("1"):
+            hold = Hold(
+                symbol=symbol,
+                reason=f"sizing yielded zero quantity (recommendation={recommendation} conviction={conviction:.3f})",
+            )
+            return {"trade_proposal": hold.model_dump(mode="json")}
+
+        side = trade_side_from_recommendation(recommendation)
+        if side is None:
+            hold = Hold(symbol=symbol, reason=f"hold recommendation: {recommendation}")
+            return {"trade_proposal": hold.model_dump(mode="json")}
+
+        proposal = TradeProposal(
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            notional=qty * bar.close,
+            rationale=f"research_manager={recommendation}@{conviction:.2f} nav={float(nav):.0f} price={float(bar.close):.2f}",
+        )
+        return {"trade_proposal": proposal.model_dump(mode="json")}
 
     return pm_node
 
@@ -619,8 +655,6 @@ def _deserialise_evidence(raw: dict[str, Any] | None) -> Any:
 
 def _deserialise_proposal(raw: dict[str, Any]) -> Any:
     """Deserialise proposal dict to TradeProposal or Hold."""
-    from firm.agents.portfolio_manager import Hold, TradeProposal
-
     if "qty" in raw and "notional" in raw:
         try:
             return TradeProposal.model_validate(raw)
@@ -649,7 +683,6 @@ def _extract_prices(proposal: object, portfolio: object) -> dict[str, Decimal]:
     Derives the proposal's implied price from notional/qty and uses avg_cost
     as a fallback for existing holdings when no live prices are available.
     """
-    from firm.agents.portfolio_manager import TradeProposal
     from firm.domain import Portfolio as PortfolioModel
 
     prices: dict[str, Decimal] = {}

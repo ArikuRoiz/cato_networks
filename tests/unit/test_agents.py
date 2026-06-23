@@ -14,7 +14,7 @@ from typing import Any
 
 from firm.adapters.fakes import FakeEvidenceStore, FakeLLM, FakeMarketData, FakeReportSink
 from firm.agents.execution import ExecutionAgent, ExecutionFailure, ExecutionInput, Fill
-from firm.agents.portfolio_manager import Hold, PMInput, PortfolioManagerAgent, TradeProposal
+from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
 from firm.agents.reporting import ReportFailure, ReportingAgent, ReportingInput, ReportSent
 from firm.agents.research import Claim, Evidence, Refusal, ResearchAgent, ResearchInput
 from firm.agents.risk import ApprovedTrade, HITLRequired, Rejected, RiskAgent, RiskInput
@@ -240,117 +240,68 @@ class TestResearchAgent:
 
 
 # ---------------------------------------------------------------------------
-# PortfolioManagerAgent tests
+# size_position tool tests (replaces PortfolioManagerAgent tests)
 # ---------------------------------------------------------------------------
 
 
-class TestPortfolioManagerAgent:
-    """Tests for PortfolioManagerAgent."""
+class TestSizePositionTool:
+    """Tests for the deterministic size_position tool.
 
-    def _make_agent(
-        self,
-        market_data: FakeMarketData | None = None,
-        risk: RiskPolicyConfig | None = None,
-    ) -> PortfolioManagerAgent:
-        return PortfolioManagerAgent(
-            market_data=market_data or FakeMarketData(),
-            risk=risk or _risk_policy(),
+    The Portfolio Manager agent has been dissolved — direction is now decided
+    solely by the Research Manager, and sizing is done by size_position.
+    Full tool tests live in tests/unit/test_tools.py; these cover integration
+    via the tool's public surface.
+    """
+
+    def test_buy_recommendation_yields_nonzero_proposal(self) -> None:
+        """BUY + high conviction + valid price → non-zero whole-share quantity."""
+        from decimal import Decimal
+
+        from firm.domain.enums import Recommendation
+        from firm.tools.size_position import size_position
+
+        qty = size_position(
+            recommendation=Recommendation.BUY,
+            conviction=0.8,
+            nav=Decimal("100000"),
+            price=Decimal("500"),
+            max_trade_notional_pct=0.10,
         )
+        assert qty >= Decimal("1")
+        notional = qty * Decimal("500")
+        assert notional <= Decimal("100000") * Decimal("0.10")
 
-    def _inp(
-        self,
-        evidence: Evidence | Refusal | None = None,
-        portfolio: Portfolio | None = None,
-    ) -> PMInput:
-        return PMInput(
-            symbol=_SYMBOL,
-            evidence=evidence or Refusal(reason="insufficient_evidence"),
-            portfolio=portfolio or _portfolio(),
-            decision_ts=_DECISION_TS,
-            correlation_id=_CORRELATION_ID,
+    def test_hold_recommendation_yields_zero(self) -> None:
+        """HOLD → size_position returns 0 regardless of conviction."""
+        from decimal import Decimal
+
+        from firm.domain.enums import Recommendation
+        from firm.tools.size_position import size_position
+
+        qty = size_position(
+            recommendation=Recommendation.HOLD,
+            conviction=0.9,
+            nav=Decimal("100000"),
+            price=Decimal("500"),
+            max_trade_notional_pct=0.10,
         )
+        assert qty == Decimal("0")
 
-    def test_holds_when_no_market_data(self) -> None:
-        """No bar available → Hold(reason='no market data')."""
-        agent = self._make_agent()
-        result = agent.run(self._inp())
-        assert isinstance(result, Hold)
-        assert "no market data" in result.reason
+    def test_zero_conviction_yields_zero(self) -> None:
+        """conviction=0 → size_position returns 0 even for a buy."""
+        from decimal import Decimal
 
-    def test_pm_holds_in_flat_signal(self) -> None:
-        """Momentum ≈ 0 and sentiment ≈ 0 → signal in hold zone → Hold."""
-        market_data = FakeMarketData()
-        bar = _bar(close=Decimal("500"))
-        market_data.add_bar(bar)
-        # Add two identical-price bars so momentum = 0
-        from datetime import timedelta
+        from firm.domain.enums import Recommendation
+        from firm.tools.size_position import size_position
 
-        prev_bar = Bar(
-            symbol=_SYMBOL,
-            open=Decimal("500"),
-            high=Decimal("500"),
-            low=Decimal("500"),
-            close=Decimal("500"),
-            volume=100_000,
-            ts=_DECISION_TS - timedelta(days=1),
+        qty = size_position(
+            recommendation=Recommendation.BUY,
+            conviction=0.0,
+            nav=Decimal("100000"),
+            price=Decimal("500"),
+            max_trade_notional_pct=0.10,
         )
-        market_data.add_bar(prev_bar)
-        # buy_threshold=0.1 — flat signal (0.0) won't exceed it
-        agent = self._make_agent(market_data=market_data)
-        result = agent.run(self._inp())
-        assert isinstance(result, Hold)
-        assert "hold zone" in result.reason
-
-    def test_pm_buys_on_strong_signal(self) -> None:
-        """Strong positive momentum + positive sentiment → TradeProposal(side='buy')."""
-        market_data = FakeMarketData()
-        # Create bars that produce positive momentum.
-        # The PM calls get_bar(symbol, decision_ts) for the current bar, so we
-        # must include a bar at exactly _DECISION_TS.  We also add lookback bars
-        # so compute_momentum has enough history.
-        from datetime import timedelta
-
-        base_ts = _DECISION_TS - timedelta(days=6)
-        prices = [
-            Decimal("400"),
-            Decimal("420"),
-            Decimal("440"),
-            Decimal("460"),
-            Decimal("480"),
-            Decimal("500"),
-            Decimal("500"),  # bar at _DECISION_TS itself (base_ts + 6 days)
-        ]
-        for i, price in enumerate(prices):
-            b = Bar(
-                symbol=_SYMBOL,
-                open=price,
-                high=price,
-                low=price,
-                close=price,
-                volume=100_000,
-                ts=base_ts + timedelta(days=i),
-            )
-            market_data.add_bar(b)
-
-        # Evidence with positive-sentiment claims
-        evidence = Evidence(
-            symbol=_SYMBOL,
-            claims=[
-                Claim(
-                    text="NVDA beat earnings estimates, revenue surpassed analyst expectations.",
-                    source_url="https://example.com",
-                    chunk_id="c1",
-                ),
-            ],
-            retrieved_at=_DECISION_TS,
-        )
-        policy = _risk_policy(buy_threshold=0.05)  # low threshold to ensure buy fires
-        agent = self._make_agent(market_data=market_data, risk=policy)
-        inp = self._inp(evidence=evidence)
-        result = agent.run(inp)
-        assert isinstance(result, TradeProposal)
-        assert result.side == "buy"
-        assert result.qty > Decimal("0")
+        assert qty == Decimal("0")
 
 
 # ---------------------------------------------------------------------------

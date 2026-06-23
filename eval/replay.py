@@ -41,23 +41,41 @@ from firm.adapters.fakes import FakeEvidenceStore, FakeLLM, FakeReportSink
 from firm.adapters.llm_cassette import CassetteLLM
 from firm.adapters.market_data_frozen import FrozenMarketData
 from firm.agents.execution import ExecutionAgent, ExecutionFailure, ExecutionInput, Fill
-from firm.agents.portfolio_manager import Hold, PMInput, PortfolioManagerAgent, TradeProposal
+from firm.agents.portfolio_manager.schemas import Hold, TradeProposal
 from firm.agents.reporting import ReportingAgent, ReportingInput
 from firm.agents.research import Evidence, Refusal, ResearchAgent, ResearchInput
+from firm.agents.research_manager import ResearchManagerAgent, ResearchManagerInput
+from firm.agents.research_manager.schemas import ResearchManagerFailure, ResearchPlan
 from firm.agents.risk import ApprovedTrade, HITLRequired, Rejected, RiskAgent, RiskInput
 from firm.config.settings import RiskPolicyConfig, load_risk_policy
 from firm.domain import Portfolio, RiskPolicy, Trade, TradeStatus
-from firm.domain.enums import RefusalReason
+from firm.domain.enums import Recommendation, RefusalReason
 from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
 from firm.ports.llm import LLM
 from firm.ports.types import LLMResponse, NewsDoc
+from firm.tools.size_position import size_position, trade_side_from_recommendation
 
 # ---------------------------------------------------------------------------
 # Configuration and result schemas
 # ---------------------------------------------------------------------------
 
 _INITIAL_NAV: Decimal = Decimal("100000")  # $100k starting cash
+_DECIMAL_ONE: Decimal = Decimal("1")
 _WATCHLIST: list[str] = ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMD"]
+
+
+def _evidence_text(research_result: object) -> str:
+    """Convert a research result to a short text summary for the Research Manager."""
+    from firm.agents.research import Evidence, Refusal
+
+    if isinstance(research_result, Evidence):
+        claims = research_result.claims
+        if not claims:
+            return "Research found no usable claims."
+        return "; ".join(c.text for c in claims[:5])
+    if isinstance(research_result, Refusal):
+        return f"Research refusal: {research_result.reason}"
+    return "No fundamental evidence available."
 
 
 class EvalConfig(BaseModel):
@@ -276,18 +294,20 @@ def _default_risk_policy() -> RiskPolicyConfig:
 
 def _build_eval_graph(
     research_agent: ResearchAgent,
-    pm_agent: PortfolioManagerAgent,
+    research_manager_agent: ResearchManagerAgent,
     risk_agent: RiskAgent,
     execution_agent: ExecutionAgent,
     reporting_agent: ReportingAgent,
     portfolio: Portfolio,
     portfolio_id: uuid.UUID,
     market_data: FrozenMarketData,
+    risk_policy: RiskPolicyConfig,
 ) -> Any:
     """Build and compile a LangGraph StateGraph for the eval harness.
 
     Uses MemorySaver as the checkpointer so no Postgres connection is required.
     All agents are closed over in the node functions.
+    The PM agent is replaced by a deterministic sizing step via ``size_position``.
     """
     builder: StateGraph = StateGraph(dict)  # type: ignore[type-arg]
 
@@ -304,19 +324,61 @@ def _build_eval_graph(
         return {"research_result": result}
 
     def _pm_node(state: dict[str, Any]) -> dict[str, Any]:
+        """Deterministic sizing node: Research Manager → size_position → TradeProposal | Hold."""
         symbol: str = state.get("symbol", "")
         decision_ts: datetime = state.get("decision_ts") or datetime.now(tz=UTC)
         correlation_id: str = state.get("correlation_id", "")
         research_result = state.get("research_result") or Refusal(reason=RefusalReason.INSUFFICIENT_EVIDENCE)
-        inp = PMInput(
+
+        # Run the Research Manager to get recommendation + conviction.
+        evidence_summary = _evidence_text(research_result)
+        rm_inp = ResearchManagerInput(
             symbol=symbol,
-            evidence=research_result,
-            portfolio=portfolio,
-            decision_ts=decision_ts,
             correlation_id=correlation_id,
+            evidence_summary=evidence_summary,
         )
-        result = pm_agent.run(inp)
-        return {"pm_result": result}
+        rm_result = research_manager_agent.run(rm_inp)
+
+        if isinstance(rm_result, ResearchManagerFailure):
+            return {"pm_result": Hold(symbol=symbol, reason=f"research_manager failed: {rm_result.failure_reason}")}
+
+        research_plan: ResearchPlan = rm_result
+        recommendation: Recommendation = research_plan.recommendation
+        conviction: float = research_plan.conviction
+
+        bar = market_data.get_bar(symbol, decision_ts)
+        if bar is None:
+            return {"pm_result": Hold(symbol=symbol, reason="no market data for sizing")}
+
+        prices: dict[str, Any] = {symbol: bar.close}
+        for sym, holding in portfolio.holdings.items():
+            if sym not in prices:
+                prices[sym] = holding.avg_cost
+        nav = portfolio.nav(prices)
+
+        qty = size_position(
+            recommendation=recommendation,
+            conviction=conviction,
+            nav=nav,
+            price=bar.close,
+            max_trade_notional_pct=risk_policy.max_trade_notional_pct,
+        )
+
+        if qty < _DECIMAL_ONE:
+            return {"pm_result": Hold(symbol=symbol, reason=f"sizing yielded zero quantity (recommendation={recommendation} conviction={conviction:.3f})")}
+
+        side = trade_side_from_recommendation(recommendation)
+        if side is None:
+            return {"pm_result": Hold(symbol=symbol, reason=f"hold recommendation: {recommendation}")}
+
+        proposal = TradeProposal(
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            notional=qty * bar.close,
+            rationale=f"research_manager={recommendation}@{conviction:.2f}",
+        )
+        return {"pm_result": proposal}
 
     def _risk_node(state: dict[str, Any]) -> dict[str, Any]:
         symbol: str = state.get("symbol", "")
@@ -742,24 +804,21 @@ def run_eval(config: EvalConfig) -> EvalResult:
         llm=llm,
         injection_guard=injection_guard,
     )
-    pm_agent = PortfolioManagerAgent(
-        market_data=market_data,
-        risk=risk_policy,
-        llm=None,  # sentiment via keyword heuristic in eval
-    )
+    research_manager_agent = ResearchManagerAgent(llm=llm)
     risk_agent = RiskAgent(risk=risk_policy)
     execution_agent = ExecutionAgent(ledger=ledger, guardrail=guardrail)  # type: ignore[arg-type]
     reporting_agent = ReportingAgent(report_sink=report_sink, ledger=ledger)  # type: ignore[arg-type]
 
     graph = _build_eval_graph(
         research_agent=research_agent,
-        pm_agent=pm_agent,
+        research_manager_agent=research_manager_agent,
         risk_agent=risk_agent,
         execution_agent=execution_agent,
         reporting_agent=reporting_agent,
         portfolio=portfolio,
         portfolio_id=portfolio_id,
         market_data=market_data,
+        risk_policy=risk_policy,
     )
 
     watchlist: list[str] = list(config.window_config.get("watchlist", _WATCHLIST))

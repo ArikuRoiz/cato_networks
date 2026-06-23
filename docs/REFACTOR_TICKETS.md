@@ -58,10 +58,12 @@ decision-maker removes the conflict and the double-counting, and keeps all numbe
 
 ### Files
 - **New:** `src/firm/tools/__init__.py`, `src/firm/tools/size_position.py`, `src/firm/tools/check_risk.py`
-- **Edit:** `src/firm/orchestration/nodes.py` (`make_pm_node` → deterministic sizing step)
-- **Remove/reduce:** `src/firm/agents/portfolio_manager/` (dissolve the agent; keep its schemas if
-  `TradeProposal`/`Hold` are reused)
+- **Edit (3 PM call sites — PM is imported in all three):** `src/firm/orchestration/nodes.py`
+  (`make_pm_node` → sizing step), `eval/replay.py` (its `_pm_node`), `src/firm/cli.py` (PM construction)
+- **Remove:** `PortfolioManagerAgent` class + its momentum/sentiment/llm logic. **Keep** the
+  `TradeProposal`/`Hold` schemas (used by risk/execution/eval) — relocate if needed without breaking importers.
 - **Tests:** new `tests/unit/test_tools.py` (size_position + check_risk); update `tests/unit/test_agents.py`
+- **Note:** graph convergence stays in R2 — eval keeps its own graph here, just swaps the PM agent for the tool.
 
 ### Out of scope (other tickets)
 - Graph convergence → R2 · tools layer for retrieval/reporting → R3 · merges → R4 ·
