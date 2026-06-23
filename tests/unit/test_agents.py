@@ -592,3 +592,227 @@ class TestReportingAgent:
         result = agent.run(inp)
         assert isinstance(result, ReportFailure)
         assert len(sink.daily_reports_sent) == 0
+
+
+# ---------------------------------------------------------------------------
+# TechnicalAnalysisAgent tests
+# ---------------------------------------------------------------------------
+
+
+def _make_bars(n: int, close: float = 500.0) -> list[Bar]:
+    """Build *n* synthetic daily bars at a fixed close price."""
+    from datetime import timedelta
+
+    base = datetime(2024, 9, 1, tzinfo=UTC)
+    return [
+        Bar(
+            symbol=_SYMBOL,
+            open=Decimal(str(close)),
+            high=Decimal(str(close + 2)),
+            low=Decimal(str(close - 2)),
+            close=Decimal(str(close)),
+            volume=1_000_000,
+            ts=base + timedelta(days=i),
+        )
+        for i in range(n)
+    ]
+
+
+class TestTechnicalAnalysisAgent:
+    """TechnicalAnalysisAgent: LLM errors / invalid JSON must never produce TechnicalUnavailable
+    when valid price bars exist.
+    """
+
+    def _make_market_data(self, bars: list[Bar]) -> Any:
+        """Return a minimal MarketDataSource that always returns *bars*."""
+
+        @dataclass
+        class StubMarketData:
+            _bars: list[Bar]
+
+            def get_bars(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
+                return self._bars
+
+            def get_bar(self, symbol: str, ts: datetime) -> Bar | None:
+                return self._bars[-1] if self._bars else None
+
+        return StubMarketData(_bars=bars)
+
+    def _inp(self) -> Any:
+        from firm.agents.technical.schemas import TechnicalInput
+
+        return TechnicalInput(
+            symbol=_SYMBOL,
+            decision_ts=_DECISION_TS,
+            correlation_id=_CORRELATION_ID,
+        )
+
+    def _llm_error(self) -> Any:
+        """LLM that always returns LLMError."""
+        from firm.ports.types import LLMError, ToolDef, ToolExecutors
+
+        @dataclass
+        class ErrorLLM:
+            def complete(self, messages: list[LLMMessage], *, model: str, max_tokens: int) -> Any:
+                return LLMError(message="connection refused", retryable=True)
+
+            def complete_with_tools(
+                self,
+                messages: list[LLMMessage],
+                tools: list[ToolDef],
+                executors: ToolExecutors,
+                *,
+                model: str,
+                max_tokens: int,
+                max_rounds: int = 5,
+            ) -> Any:
+                # Execute all tool callbacks so indicators_snapshot is populated,
+                # then fail at the LLM response stage.
+                for _name, fn in executors.items():
+                    try:
+                        fn({"lookback_days": 40})
+                    except Exception:
+                        pass
+                return LLMError(message="connection refused", retryable=True)
+
+            def count_tokens(self, messages: list[LLMMessage], *, model: str) -> int:
+                return 0
+
+        return ErrorLLM()
+
+    def _llm_junk(self) -> Any:
+        """LLM that executes tool callbacks then returns unparseable garbage."""
+        from firm.ports.types import LLMResponse, ToolDef, ToolExecutors
+
+        @dataclass
+        class JunkLLM:
+            def complete(self, messages: list[LLMMessage], *, model: str, max_tokens: int) -> Any:
+                return LLMResponse(
+                    content="not json at all", input_tokens=10, output_tokens=5, model="haiku"
+                )
+
+            def complete_with_tools(
+                self,
+                messages: list[LLMMessage],
+                tools: list[ToolDef],
+                executors: ToolExecutors,
+                *,
+                model: str,
+                max_tokens: int,
+                max_rounds: int = 5,
+            ) -> Any:
+                for _name, fn in executors.items():
+                    try:
+                        fn({"lookback_days": 40})
+                    except Exception:
+                        pass
+                return LLMResponse(
+                    content="not json at all", input_tokens=10, output_tokens=5, model="haiku"
+                )
+
+            def count_tokens(self, messages: list[LLMMessage], *, model: str) -> int:
+                return 0
+
+        return JunkLLM()
+
+    def test_llm_error_with_valid_bars_returns_technical_signal(self) -> None:
+        """LLMError + ≥14 bars → TechnicalSignal with deterministic bias (NOT TechnicalUnavailable)."""
+        from firm.agents.technical import TechnicalAnalysisAgent, TechnicalSignal
+
+        bars = _make_bars(30, close=500.0)
+        agent = TechnicalAnalysisAgent(
+            market_data=self._make_market_data(bars),
+            llm=self._llm_error(),
+        )
+        result = agent.run(self._inp())
+
+        assert isinstance(result, TechnicalSignal), (
+            f"Expected TechnicalSignal but got {type(result).__name__}: {result}"
+        )
+        assert result.symbol == _SYMBOL
+
+    def test_invalid_json_with_valid_bars_returns_technical_signal(self) -> None:
+        """LLM returns junk JSON + ≥14 bars → TechnicalSignal (NOT TechnicalUnavailable)."""
+        from firm.agents.technical import TechnicalAnalysisAgent, TechnicalSignal
+
+        bars = _make_bars(30, close=500.0)
+        agent = TechnicalAnalysisAgent(
+            market_data=self._make_market_data(bars),
+            llm=self._llm_junk(),
+        )
+        result = agent.run(self._inp())
+
+        assert isinstance(result, TechnicalSignal), (
+            f"Expected TechnicalSignal but got {type(result).__name__}: {result}"
+        )
+        assert result.symbol == _SYMBOL
+
+    def test_deterministic_bias_bearish_on_overbought_rsi(self) -> None:
+        """_deterministic_bias: RSI > 70 → bearish regardless of histogram."""
+        from firm.agents.technical.agent import _deterministic_bias
+        from firm.domain.enums import TechnicalBias
+
+        ind = {
+            "rsi": 75.0,
+            "histogram": 0.5,
+            "macd": 0.1,
+            "signal": 0.05,
+            "bb_upper": 510.0,
+            "bb_mid": 500.0,
+            "bb_lower": 490.0,
+            "bb_position": 0.8,
+            "avg_volume": 1_000_000.0,
+        }
+        assert _deterministic_bias(ind) == TechnicalBias.BEARISH
+
+    def test_deterministic_bias_bullish_on_oversold_rsi(self) -> None:
+        """_deterministic_bias: RSI < 30 → bullish regardless of histogram."""
+        from firm.agents.technical.agent import _deterministic_bias
+        from firm.domain.enums import TechnicalBias
+
+        ind = {
+            "rsi": 25.0,
+            "histogram": -0.5,
+            "macd": -0.1,
+            "signal": -0.05,
+            "bb_upper": 510.0,
+            "bb_mid": 500.0,
+            "bb_lower": 490.0,
+            "bb_position": 0.2,
+            "avg_volume": 1_000_000.0,
+        }
+        assert _deterministic_bias(ind) == TechnicalBias.BULLISH
+
+    def test_deterministic_bias_uses_histogram_in_neutral_rsi_zone(self) -> None:
+        """_deterministic_bias: neutral RSI + positive histogram → bullish."""
+        from firm.agents.technical.agent import _deterministic_bias
+        from firm.domain.enums import TechnicalBias
+
+        ind = {
+            "rsi": 55.0,
+            "histogram": 0.3,
+            "macd": 0.2,
+            "signal": 0.1,
+            "bb_upper": 510.0,
+            "bb_mid": 500.0,
+            "bb_lower": 490.0,
+            "bb_position": 0.5,
+            "avg_volume": 1_000_000.0,
+        }
+        assert _deterministic_bias(ind) == TechnicalBias.BULLISH
+
+    def test_insufficient_bars_still_returns_unavailable(self) -> None:
+        """< 14 bars → TechnicalUnavailable (the only valid case for Unavailable)."""
+        from firm.agents.technical import TechnicalAnalysisAgent, TechnicalUnavailable
+
+        bars = _make_bars(5, close=500.0)
+        # Use a cooperative LLM that never gets to respond because the tool
+        # returns an error message (no indicators_snapshot populated).
+        llm = FakeLLM(responses=[_llm_response("not json")] * 5)
+        agent = TechnicalAnalysisAgent(
+            market_data=self._make_market_data(bars),
+            llm=llm,
+        )
+        result = agent.run(self._inp())
+        assert isinstance(result, TechnicalUnavailable)
+        assert "insufficient" in result.reason.lower()

@@ -3,6 +3,15 @@
 The LLM calls ``get_price_and_indicators`` to retrieve OHLCV bars and computed
 RSI/MACD/Bollinger values, then produces a structured JSON signal.  The LLM
 controls what lookback window it requests rather than receiving a fixed dataset.
+
+Degradation contract
+--------------------
+* ``TechnicalUnavailable`` is returned **only** when genuine price history is
+  insufficient (<14 bars).
+* LLM errors and invalid JSON are handled by a deterministic fallback that
+  derives bias from RSI / MACD histogram and emits a ``TechnicalSignal`` with
+  a generated headline.  This ensures callers always receive a typed signal
+  when valid bars exist.
 """
 
 from __future__ import annotations
@@ -101,29 +110,92 @@ class TechnicalAnalysisAgent(BaseAgent[TechnicalInput, TechnicalSignal | Technic
             max_rounds=3,
         )
 
-        if isinstance(resp, LLMError):
-            return TechnicalUnavailable(symbol=inp.symbol, reason=f"llm_error: {resp.message}")
-
         if not indicators_snapshot:
+            # Tool never populated indicators — genuine insufficient history.
             return TechnicalUnavailable(symbol=inp.symbol, reason="insufficient price history")
+
+        if isinstance(resp, LLMError):
+            return _deterministic_signal(inp.symbol, indicators_snapshot, last_close)
 
         return _parse_signal(inp.symbol, resp.content, indicators_snapshot, last_close)
 
 
+# ---------------------------------------------------------------------------
+# Signal construction helpers
+# ---------------------------------------------------------------------------
+
+
+def _macd_cross(histogram: float) -> MACDCross:
+    if histogram > 0.001:
+        return MACDCross.BULLISH
+    if histogram < -0.001:
+        return MACDCross.BEARISH
+    return MACDCross.NONE
+
+
+def _deterministic_bias(ind: dict[str, float]) -> TechnicalBias:
+    """Derive bias from RSI and MACD histogram without LLM involvement.
+
+    Rules (applied in priority order):
+    * RSI > 70 → bearish (overbought)
+    * RSI < 30 → bullish (oversold)
+    * MACD histogram > 0 → bullish momentum
+    * MACD histogram < 0 → bearish momentum
+    * Otherwise → neutral
+    """
+    rsi = ind["rsi"]
+    hist = ind["histogram"]
+    if rsi > 70:
+        return TechnicalBias.BEARISH
+    if rsi < 30:
+        return TechnicalBias.BULLISH
+    if hist > 0:
+        return TechnicalBias.BULLISH
+    if hist < 0:
+        return TechnicalBias.BEARISH
+    return TechnicalBias.NEUTRAL
+
+
+def _deterministic_signal(symbol: str, ind: dict[str, float], close: float) -> TechnicalSignal:
+    """Build a ``TechnicalSignal`` from indicators alone — no LLM required.
+
+    Used as a fallback when the LLM call fails or returns unparseable output.
+    All numeric fields are deterministic; prose is generated from the indicators.
+    """
+    bias = _deterministic_bias(ind)
+    rsi = ind["rsi"]
+    hist = ind["histogram"]
+    headline = (
+        f"{symbol}: RSI {rsi:.1f}, MACD histogram {hist:+.4f} — {bias.value} bias (auto-derived)"
+    )
+    body = (
+        f"Indicators computed from price history without LLM prose. "
+        f"RSI(14)={rsi:.1f}, MACD histogram={hist:+.4f}, "
+        f"BB position={ind['bb_position']:.1%}."
+    )
+    return TechnicalSignal(
+        symbol=symbol,
+        headline=headline[:120],
+        body=body,
+        bias=bias,
+        rsi=round(rsi, 2),
+        macd=round(ind["macd"], 4),
+        macd_cross=_macd_cross(hist),
+        bb_position=round(ind["bb_position"], 3),
+        key_support=round(close * 0.97, 2),
+        key_resistance=round(close * 1.03, 2),
+    )
+
+
 def _parse_signal(
     symbol: str, content: str, ind: dict[str, float], close: float
-) -> TechnicalSignal | TechnicalUnavailable:
+) -> TechnicalSignal:
+    """Parse LLM JSON into a ``TechnicalSignal``, falling back to deterministic values on failure."""
     raw = parse_json_dict(content)
     if raw is None:
-        return TechnicalUnavailable(symbol=symbol, reason="llm returned invalid JSON")
+        return _deterministic_signal(symbol, ind, close)
 
-    if ind["histogram"] > 0.001:
-        macd_cross = MACDCross.BULLISH
-    elif ind["histogram"] < -0.001:
-        macd_cross = MACDCross.BEARISH
-    else:
-        macd_cross = MACDCross.NONE
-
+    hist = ind["histogram"]
     return TechnicalSignal(
         symbol=symbol,
         headline=str(raw.get("headline", "Technical analysis unavailable"))[:120],
@@ -133,7 +205,7 @@ def _parse_signal(
         else TechnicalBias.NEUTRAL,
         rsi=round(ind["rsi"], 2),
         macd=round(ind["macd"], 4),
-        macd_cross=macd_cross,
+        macd_cross=_macd_cross(hist),
         bb_position=round(ind["bb_position"], 3),
         key_support=float(raw.get("key_support", round(close * 0.97, 2))),
         key_resistance=float(raw.get("key_resistance", round(close * 1.03, 2))),
