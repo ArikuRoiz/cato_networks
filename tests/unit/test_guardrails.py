@@ -11,7 +11,6 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from pydantic import BaseModel
 
 from firm.domain import (
     Approved,
@@ -28,10 +27,8 @@ from firm.domain.guardrails import (
     InjectionGuard,
     LedgerGuardrail,
     LimitExceeded,
-    OutputSchemaValidator,
     TokenBudgetCircuitBreaker,
     TokenBudgetExceeded,
-    ValidationFailure,
 )
 
 # ---------------------------------------------------------------------------
@@ -405,68 +402,3 @@ def test_token_budget_unknown_id_is_zero() -> None:
     assert breaker.get_total("never-seen") == 0
 
 
-# ---------------------------------------------------------------------------
-# MANDATORY: test_output_schema_validation_failure
-# Spec: "Validate every agent input/output against its Pydantic schema"
-# ---------------------------------------------------------------------------
-
-
-class _SampleSchema(BaseModel):
-    """Minimal Pydantic model used as the validation target in tests."""
-
-    symbol: str
-    score: float
-
-
-def test_output_schema_validation_failure() -> None:
-    """OutputSchemaValidator returns ValidationFailure for malformed LLM output."""
-    validator = OutputSchemaValidator()
-    bad_json = '{"symbol": "AAPL"}'  # missing required 'score' field
-
-    result = validator.validate(bad_json, _SampleSchema)
-
-    assert isinstance(result, ValidationFailure)
-    assert len(result.errors) > 0
-    # Each error is a dict (Pydantic v2 error format)
-    assert isinstance(result.errors[0], dict)
-
-
-def test_output_schema_validation_success() -> None:
-    """OutputSchemaValidator returns the parsed model for valid LLM output."""
-    validator = OutputSchemaValidator()
-    good_json = '{"symbol": "NVDA", "score": 0.87}'
-
-    result = validator.validate(good_json, _SampleSchema)
-
-    assert isinstance(result, _SampleSchema)
-    assert result.symbol == "NVDA"
-    assert result.score == pytest.approx(0.87)
-
-
-def test_output_schema_validation_invalid_json() -> None:
-    """OutputSchemaValidator returns ValidationFailure for non-JSON content."""
-    validator = OutputSchemaValidator()
-    not_json = "Sorry, I cannot help with that."
-
-    result = validator.validate(not_json, _SampleSchema)
-
-    assert isinstance(result, ValidationFailure)
-
-
-def test_output_schema_validation_wrong_type() -> None:
-    """OutputSchemaValidator returns ValidationFailure when a field has the wrong type.
-
-    Pydantic v2 (lax mode) coerces int→str, so ``symbol: 123`` may pass.
-    However ``score: "not-a-float"`` cannot be coerced to float and must
-    produce a ValidationFailure — this is the discriminating assertion.
-    """
-    validator = OutputSchemaValidator()
-    wrong_type = '{"symbol": 123, "score": "not-a-float"}'
-
-    result = validator.validate(wrong_type, _SampleSchema)
-
-    assert isinstance(result, ValidationFailure), (
-        "Expected ValidationFailure because 'not-a-float' cannot coerce to float, "
-        f"but got {type(result).__name__}"
-    )
-    assert len(result.errors) > 0

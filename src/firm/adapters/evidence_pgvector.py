@@ -273,10 +273,9 @@ def _row_to_chunk(row: tuple[Any, ...]) -> Chunk:
         source_url,
         chunk_id,
         published_at,
-        embedding,
+        _,  # embedding column — used by DB for ordering, not surfaced on Chunk
         dense_score,
     ) = row
-    embedding_list: list[float] = list(embedding) if embedding is not None else []
     return Chunk(
         id=uuid.UUID(str(row_id)),
         symbol=symbol,
@@ -285,5 +284,4 @@ def _row_to_chunk(row: tuple[Any, ...]) -> Chunk:
         chunk_id=chunk_id,
         published_at=published_at,
         score=float(dense_score),
-        embedding=embedding_list,
     )

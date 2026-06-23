@@ -48,8 +48,6 @@ def _valid_yaml_data() -> dict[str, object]:
         "momentum_lookback_days": 5,
         "max_events_per_symbol_per_hour": 3,
         "event_relevance_threshold": 0.70,
-        "slippage_bps": 5,
-        "commission_per_share": 0.005,
         "token_budget_per_cycle": 50000,
     }
 
@@ -100,12 +98,6 @@ class TestLoadRiskPolicyLockedValues:
     def test_event_relevance_threshold(self) -> None:
         assert load_risk_policy().event_relevance_threshold == pytest.approx(0.70)
 
-    def test_slippage_bps(self) -> None:
-        assert load_risk_policy().slippage_bps == 5
-
-    def test_commission_per_share(self) -> None:
-        assert load_risk_policy().commission_per_share == pytest.approx(0.005)
-
     def test_token_budget_per_cycle(self) -> None:
         assert load_risk_policy().token_budget_per_cycle == 50_000
 
@@ -126,14 +118,6 @@ def test_bad_weights_raises_value_error(tmp_path: Path) -> None:
     data["sentiment_weight"] = 0.40  # sum = 1.10
     path = _write_yaml(tmp_path, data)
     with pytest.raises(ValueError, match=r"must equal 1\.0"):
-        load_risk_policy(path)
-
-
-def test_negative_slippage_raises_value_error(tmp_path: Path) -> None:
-    data = _valid_yaml_data()
-    data["slippage_bps"] = -1
-    path = _write_yaml(tmp_path, data)
-    with pytest.raises(ValueError, match="slippage_bps"):
         load_risk_policy(path)
 
 

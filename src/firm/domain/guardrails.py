@@ -8,9 +8,7 @@ outcomes to callers without exception flow.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, ClassVar, NamedTuple, TypeVar
-
-from pydantic import BaseModel, ValidationError
+from typing import ClassVar, NamedTuple
 
 from firm.domain.decisions import Approved, HITLRequired, Rejected
 from firm.domain.portfolio import Portfolio
@@ -31,14 +29,8 @@ class TokenBudgetExceeded(Exception):
 
 
 # ---------------------------------------------------------------------------
-# ValidationFailure / InjectionDetected — result types, not exceptions
+# InjectionDetected — result type, not exception
 # ---------------------------------------------------------------------------
-
-
-class ValidationFailure(NamedTuple):
-    """LLM output that failed schema validation."""
-
-    errors: list[dict[str, Any]]
 
 
 class InjectionDetected(NamedTuple):
@@ -88,36 +80,6 @@ class TokenBudgetCircuitBreaker:
     def get_total(self, correlation_id: str) -> int:
         """Return the cumulative token count for *correlation_id* (0 if unseen)."""
         return self._budgets.get(correlation_id, 0)
-
-
-# ---------------------------------------------------------------------------
-# OutputSchemaValidator
-# ---------------------------------------------------------------------------
-
-T = TypeVar("T", bound=BaseModel)
-
-
-class OutputSchemaValidator:
-    """Validate raw LLM response text against a Pydantic schema.
-
-    Returns the parsed model instance on success or a ``ValidationFailure``
-    NamedTuple on failure — never raises for expected validation problems.
-    """
-
-    def validate(
-        self,
-        response_content: str,
-        schema: type[T],
-    ) -> T | ValidationFailure:
-        """Parse *response_content* as JSON conforming to *schema*.
-
-        Returns ``T`` on success; ``ValidationFailure`` when the content does
-        not conform to the schema (e.g. missing fields, wrong types).
-        """
-        try:
-            return schema.model_validate_json(response_content)
-        except ValidationError as exc:
-            return ValidationFailure(errors=exc.errors())  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

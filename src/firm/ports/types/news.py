@@ -18,13 +18,8 @@ class Chunk(BaseModel):
     chunk_id: str
     published_at: datetime
     score: float = 0.0
-    embedding: list[float] = []
 
     model_config = {"frozen": True}
-
-    @property
-    def is_relevant(self) -> bool:
-        return self.score > 0.7
 
 
 class NewsDoc(BaseModel):

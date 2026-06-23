@@ -51,7 +51,13 @@ class RiskPolicyConfig(BaseModel, frozen=True):
       - ``sell_threshold`` must be strictly negative (< 0); a positive value
         would invert buy/sell signals.
       - ``momentum_weight + sentiment_weight`` must equal 1.0 (±1e-9).
-      - Integer counts and cost parameters must be strictly positive.
+      - Integer counts must be strictly positive.
+
+    Fill-cost model (slippage_bps=5, commission_per_share=$0.005) is the
+    authoritative single source of truth in ``firm.domain.portfolio`` as module
+    constants ``_SLIPPAGE_BPS`` and ``_COMMISSION_PER_SHARE``.  These values
+    are consumed directly by ``firm.persistence.ledger`` and
+    ``firm.domain.portfolio.Portfolio.can_afford``.
     """
 
     # Core risk limits
@@ -74,10 +80,6 @@ class RiskPolicyConfig(BaseModel, frozen=True):
     # News-event qualifying parameters
     max_events_per_symbol_per_hour: int
     event_relevance_threshold: float
-
-    # Fill-cost model
-    slippage_bps: int
-    commission_per_share: float
 
     # LLM cost control
     token_budget_per_cycle: int
@@ -114,8 +116,6 @@ class RiskPolicyConfig(BaseModel, frozen=True):
         return v
 
     @field_validator(
-        "slippage_bps",
-        "commission_per_share",
         "momentum_lookback_days",
         "max_events_per_symbol_per_hour",
         "token_budget_per_cycle",
@@ -166,8 +166,6 @@ def load_risk_policy(
         momentum_lookback_days=int(raw["momentum_lookback_days"]),
         max_events_per_symbol_per_hour=int(raw["max_events_per_symbol_per_hour"]),
         event_relevance_threshold=float(raw["event_relevance_threshold"]),
-        slippage_bps=int(raw["slippage_bps"]),
-        commission_per_share=float(raw["commission_per_share"]),
         token_budget_per_cycle=int(raw["token_budget_per_cycle"]),
     )
 

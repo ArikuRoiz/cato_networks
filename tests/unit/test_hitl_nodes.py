@@ -75,8 +75,6 @@ def _make_risk_policy(hitl_threshold_pct: float = 0.05) -> RiskPolicyConfig:
         momentum_lookback_days=5,
         max_events_per_symbol_per_hour=3,
         event_relevance_threshold=0.70,
-        slippage_bps=5,
-        commission_per_share=0.005,
         token_budget_per_cycle=50000,
     )
 

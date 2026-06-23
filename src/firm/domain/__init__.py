@@ -19,10 +19,8 @@ from firm.domain.guardrails import (
     InjectionGuard,
     LedgerGuardrail,
     LimitExceeded,
-    OutputSchemaValidator,
     TokenBudgetCircuitBreaker,
     TokenBudgetExceeded,
-    ValidationFailure,
 )
 from firm.domain.market import Bar
 from firm.domain.portfolio import Holding, Lot, Portfolio
@@ -46,7 +44,6 @@ __all__ = [
     "LimitExceeded",
     "Lot",
     "MACDCross",
-    "OutputSchemaValidator",
     "PolicyResult",
     "Portfolio",
     "Recommendation",
@@ -60,6 +57,5 @@ __all__ = [
     "TradeSide",
     "TradeStatus",
     "TriggerType",
-    "ValidationFailure",
     "VerdictAlignment",
 ]
