@@ -28,9 +28,11 @@ if config.config_file_name is not None:
 # Priority: DATABASE_URL env var → alembic.ini sqlalchemy.url fallback.
 # The env var is the production-safe path; the .ini default is a dev convenience.
 
-_db_url = os.environ.get("DATABASE_URL")
+from firm.persistence.db_url import to_sqlalchemy_url  # noqa: E402
+
+_db_url = os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
 if _db_url:
-    config.set_main_option("sqlalchemy.url", _db_url)
+    config.set_main_option("sqlalchemy.url", to_sqlalchemy_url(_db_url))
 
 # ---------------------------------------------------------------------------
 # Import ORM metadata so autogenerate picks up all table definitions

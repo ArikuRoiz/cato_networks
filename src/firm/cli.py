@@ -120,10 +120,12 @@ def _run_migrations(database_url: str) -> None:
     from alembic import command
     from alembic.config import Config
 
+    from firm.persistence.db_url import to_sqlalchemy_url
+
     root = _project_root()
     alembic_cfg = Config(str(root / "migrations" / "alembic.ini"))
     alembic_cfg.set_main_option("script_location", str(root / "migrations"))
-    alembic_cfg.set_main_option("sqlalchemy.url", database_url)
+    alembic_cfg.set_main_option("sqlalchemy.url", to_sqlalchemy_url(database_url))
     command.upgrade(alembic_cfg, "head")
 
 
@@ -706,6 +708,7 @@ def _build_live_domain_objects(
 
     from firm.domain import Portfolio, RiskPolicy
     from firm.domain.guardrails import InjectionGuard, LedgerGuardrail
+    from firm.persistence.db_url import to_sqlalchemy_url
     from firm.persistence.ledger import LedgerRepository
 
     portfolio_id = uuid.uuid4()
@@ -718,7 +721,7 @@ def _build_live_domain_objects(
     )
     guardrail = LedgerGuardrail(domain_policy)
     injection_guard = InjectionGuard()
-    engine = create_engine(settings.database_url)
+    engine = create_engine(to_sqlalchemy_url(settings.database_url))
     ledger = LedgerRepository(engine)
     return portfolio, portfolio_id, guardrail, injection_guard, ledger
 
