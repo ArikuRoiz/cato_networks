@@ -1,6 +1,6 @@
 """Unit tests for the deterministic tools layer.
 
-Covers size_position and check_risk.  No LLM, no DB, no network.
+Covers size_position.  No LLM, no DB, no network.
 """
 
 from __future__ import annotations
@@ -9,11 +9,7 @@ from decimal import Decimal
 
 import pytest
 
-from firm.agents.portfolio_manager.schemas import TradeProposal
-from firm.domain import Portfolio, RiskPolicy
-from firm.domain.decisions import Approved, HITLRequired, Rejected
 from firm.domain.enums import Recommendation
-from firm.tools.check_risk import check_risk
 from firm.tools.size_position import size_position, trade_side_from_recommendation
 
 # ---------------------------------------------------------------------------
@@ -259,98 +255,3 @@ class TestTradeSideFromRecommendation:
     def test_strong_sell_is_sell(self) -> None:
         assert trade_side_from_recommendation(Recommendation.STRONG_SELL) == "sell"
 
-
-# ---------------------------------------------------------------------------
-# check_risk advisory tool
-# ---------------------------------------------------------------------------
-
-
-def _risk_policy(
-    max_trade_notional_pct: Decimal = Decimal("0.10"),
-    hitl_threshold_pct: Decimal = Decimal("0.05"),
-    max_name_concentration_pct: Decimal = Decimal("0.25"),
-    daily_loss_halt_pct: Decimal = Decimal("0.03"),
-) -> RiskPolicy:
-    return RiskPolicy(
-        max_trade_notional_pct=max_trade_notional_pct,
-        max_name_concentration_pct=max_name_concentration_pct,
-        daily_loss_halt_pct=daily_loss_halt_pct,
-        hitl_threshold_pct=hitl_threshold_pct,
-    )
-
-
-def _portfolio(cash: Decimal = Decimal("100_000")) -> Portfolio:
-    return Portfolio(cash=cash)
-
-
-class TestCheckRisk:
-    """check_risk wraps RiskPolicy.check_trade and returns the correct PolicyResult."""
-
-    def test_small_trade_approved(self) -> None:
-        """Trade well within all limits → Approved."""
-        proposal = TradeProposal(
-            symbol="NVDA",
-            side="buy",
-            qty=Decimal("1"),
-            notional=Decimal("500"),
-            rationale="test",
-        )
-        result = check_risk(
-            trade=proposal,
-            portfolio=_portfolio(),
-            prices={"NVDA": Decimal("500")},
-            policy=_risk_policy(),
-        )
-        assert isinstance(result, Approved)
-
-    def test_large_trade_requires_hitl(self) -> None:
-        """Trade notional > HITL threshold but < hard limit → HITLRequired."""
-        proposal = TradeProposal(
-            symbol="NVDA",
-            side="buy",
-            qty=Decimal("12"),
-            notional=Decimal("6000"),  # 6% of 100k — above 5% HITL, below 10% hard limit
-            rationale="large",
-        )
-        result = check_risk(
-            trade=proposal,
-            portfolio=_portfolio(),
-            prices={"NVDA": Decimal("500")},
-            policy=_risk_policy(),
-        )
-        assert isinstance(result, HITLRequired)
-
-    def test_oversized_trade_rejected(self) -> None:
-        """Trade notional > max_trade_notional_pct → Rejected."""
-        proposal = TradeProposal(
-            symbol="NVDA",
-            side="buy",
-            qty=Decimal("30"),
-            notional=Decimal("15000"),  # 15% of 100k — above 10% hard limit
-            rationale="oversized",
-        )
-        result = check_risk(
-            trade=proposal,
-            portfolio=_portfolio(),
-            prices={"NVDA": Decimal("500")},
-            policy=_risk_policy(),
-        )
-        assert isinstance(result, Rejected)
-
-    def test_missing_price_falls_back_to_implied_price(self) -> None:
-        """When symbol not in prices dict, implied price (notional/qty) is used."""
-        proposal = TradeProposal(
-            symbol="NVDA",
-            side="buy",
-            qty=Decimal("1"),
-            notional=Decimal("500"),
-            rationale="no price dict",
-        )
-        result = check_risk(
-            trade=proposal,
-            portfolio=_portfolio(),
-            prices={},  # deliberately empty
-            policy=_risk_policy(),
-        )
-        # Should not raise; result type depends on NAV/notional ratio
-        assert isinstance(result, (Approved, HITLRequired, Rejected))

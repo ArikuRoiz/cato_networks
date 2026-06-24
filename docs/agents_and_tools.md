@@ -22,7 +22,6 @@ a disguised service. One agent decides direction; everything else is determinist
 | Tool | Where defined | Purpose |
 |---|---|---|
 | `size_position` | `src/firm/tools/size_position.py` | Sizing math: conviction × NAV → qty, capped by RiskPolicy |
-| `check_risk` | `src/firm/tools/check_risk.py` | Wraps `RiskPolicy.check_trade`; advisory before the mandatory gate |
 | `search_news` | inline closure in `research` agent | `EvidenceStore.search` + injection scan; called by the LLM tool loop |
 | `price_indicators` | inline closure in `technical` agent | `MarketDataSource.get_bars` + `compute_indicators`; called by the LLM tool loop |
 
@@ -193,13 +192,6 @@ The graph wires them as steps; the LLM **cannot** choose to skip them.
   floored to whole shares. Direction comes from the Research Manager's `recommendation` —
   `size_position` **never** re-derives direction.
 - **Why deterministic:** guarantees no hallucinated quantities; all numbers are arithmetic.
-
-## check_risk  (`src/firm/tools/check_risk.py`)
-
-- **Signature:** `check_risk(trade, portfolio, prices, policy) -> Approved | Rejected`
-- **Called by:** the `risk` node as the advisory pre-check before the mandatory HITL gate.
-- **Logic:** thin wrapper around `RiskPolicy.check_trade`. Defense-in-depth: the mandatory risk
-  guardrail (`risk` node) re-validates unconditionally regardless of this advisory result.
 
 ## search_news — inline closure in the `research` agent
 

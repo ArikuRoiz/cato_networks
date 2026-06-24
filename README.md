@@ -67,7 +67,7 @@ See `docs/telegram_flow.md` for the full operator sequence.
 research + technical (parallel)
         → debate (bull ⇄ bear ×N)
         → Research Manager (decide direction + conviction)   [SOLE decider — LLM]
-        → size_position tool (deterministic sizing) + check_risk
+        → size_position tool (deterministic sizing)
         → [RISK GUARDRAIL] → HITL interrupt (every cycle) → human Approve / Reject→(Buy|Sell|Hold)
         → Execution (atomic ledger write; hard RiskPolicy limits still enforced)
         → Reporting agent (memo + Excel/Slack)
@@ -77,11 +77,11 @@ research + technical (parallel)
 **Agents (LLM judgment):** Research · Technical · Debater (one class, two roles) ·
 Research Manager (sole decision agent) · Reporting · Judge.
 
-**Portfolio Manager is not an agent** — it dissolves into the deterministic `size_position` +
-`check_risk` tools. Risk and Execution are mandatory deterministic gates, not agents.
+**Portfolio Manager is not an agent** — it dissolves into the deterministic `size_position`
+tool. Risk and Execution are mandatory deterministic gates, not agents.
 
 **Tools layer:** `search_news` · `fetch_live_news` · `price_indicators` · `compute_signal` ·
-`size_position` · `check_risk` · `make_report` · `ledger_commit`.
+`size_position` · `make_report` · `ledger_commit`.
 
 Four protocol ports (`MarketDataSource`, `EvidenceStore`, `LLM`, `ReportSink`) isolate live from
 replay. The ledger is a concrete Postgres repository — tested against a real database, not mocked.

@@ -29,7 +29,7 @@ Scheduler (scheduled triggers)         News Event Listener (debounced)
           │  research + technical (parallel)                         │
           │       → debate (bull ⇄ bear ×N)                         │
           │       → Research Manager   [SOLE decision agent — LLM]  │
-          │       → size_position + check_risk  [deterministic]      │
+          │       → size_position  [deterministic]                   │
           │       → RISK GUARDRAIL ─┬─(auto)──→ Execution           │
           │                         └─(HITL)──→ Execution           │
           │                                ↓                         │
@@ -58,7 +58,6 @@ Scheduler (scheduled triggers)         News Event Listener (debounced)
 | Step | Input | Output |
 |---|---|---|
 | `size_position` | `ResearchPlan` + NAV + price + policy | `TradeProposal \| Hold` |
-| `check_risk` | trade stub + portfolio + prices | `Approved \| Rejected` |
 
 `Portfolio Manager is NOT an LLM agent.` The sizing logic lives in the deterministic `size_position`
 tool called from the `pm` node. The `portfolio_manager/` package remains as a schema source
@@ -158,9 +157,8 @@ COMMIT;
 Partial writes are impossible: either the entire transaction commits or nothing changes.
 
 The mandatory **risk guardrail** re-validates against `RiskPolicy` immediately before
-every `ledger_commit` call — even if `check_risk` already ran after sizing. This
-defense-in-depth means the LLM can never bypass risk limits regardless of what path the
-graph took to reach execution.
+every `ledger_commit` call. This defense-in-depth means the LLM can never bypass risk
+limits regardless of what path the graph took to reach execution.
 
 ---
 
@@ -232,8 +230,8 @@ decision-maker removes the conflict, eliminates hallucinated-direction risk, and
 quantities LLM-free (guaranteed no hallucinated numbers).
 
 **What replaced it:** `size_position(recommendation, conviction, nav, price, policy) -> qty`
-is pure arithmetic. `check_risk` wraps `RiskPolicy.check_trade` as an advisory step. The
-mandatory risk guardrail before execution is unchanged — defense-in-depth.
+is pure arithmetic. The mandatory `RiskAgent` + `LedgerGuardrail` enforce risk limits
+before execution — defense-in-depth.
 
 **Trade-off accepted:** momentum is no longer a direction signal. If price momentum should
 influence *size*, it is passed as an input to `size_position`, never used to flip direction.

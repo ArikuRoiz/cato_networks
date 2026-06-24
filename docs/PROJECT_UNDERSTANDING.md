@@ -59,7 +59,7 @@ max 3/symbol/hour.
 
 **Tools / skills layer** (deterministic capabilities, folded into the agent that owns them):
 `search_news` · `fetch_live_news` (prod; appends to corpus) · `price_indicators` ·
-`compute_signal` · `size_position` · `check_risk` · `make_report` · `ledger_commit`
+`compute_signal` · `size_position` · `make_report` · `ledger_commit`
 
 **Real agents** (LLM judgment):
 - **Research** — `search_news`, and in prod `fetch_live_news`. Grounds cited claims.
@@ -68,10 +68,10 @@ max 3/symbol/hour.
 - **Research Manager** — the **SOLE decision agent**: adjudicates the debate and outputs direction
   (strong_buy…strong_sell) + conviction (0–1). One brain decides *what* to do.
 
-> Portfolio Manager is **NOT** an agent. It dissolves into the deterministic `size_position` +
-> `check_risk` tools below: sizing math turns the Manager's recommendation + conviction into an
-> exact share quantity, capped by RiskPolicy. This removes the old two-decision-makers conflict
-> (where PM could re-derive its own signal and override the Manager with a Hold).
+> Portfolio Manager is **NOT** an agent. It dissolves into the deterministic `size_position`
+> tool: sizing math turns the Manager's recommendation + conviction into an exact share quantity,
+> capped by RiskPolicy. This removes the old two-decision-makers conflict (where PM could
+> re-derive its own signal and override the Manager with a Hold).
 - **Reporting agent** — writes the investment memo and builds the Excel + Slack report via `make_report`.
 - **Judge (final)** — independent LLM-as-judge auditor: scores the cycle's coherence 1–5; the
   verdict is recorded and feeds the eval's process-quality metrics.
@@ -91,7 +91,7 @@ max 3/symbol/hour.
 research + technical (parallel)
         → debate (bull ⇄ bear ×N)
         → Research Manager (decide direction + conviction)   [SOLE decider — LLM]
-        → size_position tool (deterministic sizing) + check_risk
+        → size_position tool (deterministic sizing)
         → [RISK GUARDRAIL] → HITL interrupt (every cycle) → human Approve / Reject→(Buy|Sell|Hold)  (RECORDED)
         → Execution (atomic ledger write; hard RiskPolicy limits still enforced)
         → Reporting agent (memo + Excel/Slack)
@@ -130,7 +130,7 @@ All of the items below are now **resolved**:
 
 ## Open questions
 1. ~~Manager merge?~~ **RESOLVED** — no merge. Research Manager is the sole decision agent;
-   Portfolio Manager dissolves into the `size_position` + `check_risk` tools. One decision-maker.
+   Portfolio Manager dissolves into the `size_position` tool. One decision-maker.
 2. ~~Judge fold?~~ **RESOLVED** — Judge stays a **standalone independent auditor** (its own final
    node). It grades the whole cycle including the memo, so it must not be the agent that wrote the
    memo. Its 1–5 coherence score is recorded and feeds the eval's process-quality metrics. (Reversible.)
@@ -138,7 +138,7 @@ All of the items below are now **resolved**:
 ## 9. Current status & known gaps (TODO)
 
 **Shipped and verified live** (on `main`): one converged graph; real agents (Research, Technical,
-Debater bull⇄bear, Research Manager) + deterministic `size_position`/`check_risk` tools;
+Debater bull⇄bear, Research Manager) + deterministic `size_position` tool;
 always-HITL with override over Telegram (`firm bot`), durable via the Postgres checkpoint; NYSE
 market-hours gating; real NAV/P&L; pgvector RAG; Langfuse traces; Excel + Slack reports; 530 tests
 + `make lint` green. A live `firm run`/`firm bot` produces genuine buy/sell/hold decisions — e.g. an

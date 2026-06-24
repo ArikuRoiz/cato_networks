@@ -198,7 +198,6 @@ src/firm/
     portfolio_manager/       Schemas only: TradeProposal, Hold (used by pm + risk nodes)
   tools/
     size_position.py         Deterministic sizing: conviction × NAV → qty, capped by RiskPolicy
-    check_risk.py            Advisory wrapper: RiskPolicy.check_trade (pre-sizing self-validation)
   orchestration/
     state.py     GraphState TypedDict — JSON-serialisable envelope
     graph.py     build_graph(checkpointer, ports) → CompiledStateGraph
@@ -281,7 +280,7 @@ Trigger
 | Single decision-maker (Research Manager) | Dissolving Portfolio Manager removes the two-signal conflict; the Judge no longer needs to flag PM-vs-Manager incoherence |
 | `size_position` is deterministic, not an agent | Sizing math (conviction × NAV, RiskPolicy caps) has a correct answer; no LLM judgment needed; testable in isolation |
 | One `DebaterAgent` class, two roles | Eliminates duplication; stance is a constructor arg; output schema unified as `DebaterCase | DebaterFailure` |
-| Tools layer (`src/firm/tools/`) | Deterministic capabilities (`size_position`, `check_risk`) are importable + unit-testable without a graph; tool closures for LLM agents live inline in each agent |
+| Tools layer (`src/firm/tools/`) | Deterministic capabilities (`size_position`) are importable + unit-testable without a graph; tool closures for LLM agents live inline in each agent |
 | Risk guardrail is mandatory and LLM-unreachable | Defense-in-depth: the Manager may self-check risk; the guardrail re-validates unconditionally before ledger write |
 | HITL = approve-every-cycle with override | `hitl_mode="always"` interrupts every cycle; human Approves or Rejects→picks Buy/Sell/Hold; an override rewrites `trade_proposal` so downstream nodes describe the executed action. Every decision persisted as `ApprovalRow` → override rate + latency are measurable. Approval channel is a pluggable skill (Telegram shipped) |
 | Reporting dispatches; synthesis writes the memo | `reporting` fetches prices + ledger and sends the structured report (Excel + Slack); `synthesis` (LLM) writes the cited investment memo |
