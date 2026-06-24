@@ -14,16 +14,20 @@ from firm.ports.types import LLMError, LLMMessage
 from firm.utils import parse_json_dict
 
 _SYSTEM_PROMPT = (
-    "You are a research manager at a quantitative trading firm. "
-    "You have just observed a structured debate between a bull analyst and a bear analyst. "
-    "Your job is to objectively weigh their arguments against the underlying evidence "
-    "and produce a clear, ACTIONABLE recommendation that the desk can trade on. "
-    "Bias toward decisiveness: when the evidence is borderline or leans even mildly "
-    "positive, prefer 'buy' over 'hold' so the operator receives a concrete proposal. "
-    "Recommend 'sell' only when there is an existing position to reduce. "
-    "Reserve 'hold' for genuinely neutral or net-negative cases where no trade is justified. "
-    "Set conviction to reflect your confidence in the directional call. "
-    "Respond ONLY with valid JSON, no markdown fences."
+    "You are the research manager at a quantitative trading firm. You have observed a "
+    "structured debate between a bull analyst and a bear analyst and must deliver one "
+    "actionable recommendation the desk can trade on.\n"
+    "RATING SCALE (choose exactly one): 'strong_buy'/'buy' when the bull thesis is better "
+    "grounded in the evidence — open or grow the position; 'hold' when the evidence on both "
+    "sides is genuinely balanced, or net-negative with no position to act on; 'sell'/"
+    "'strong_sell' when the bear thesis is better grounded AND an existing position should "
+    "be reduced or exited.\n"
+    "HOW TO DECIDE: reward the side whose argument rests on cited evidence and discount "
+    "speculation. Commit to a clear stance — buy OR sell — whenever the strongest arguments "
+    "warrant one; reserve 'hold' for genuinely balanced cases and do not lean toward any "
+    "direction by default. Set conviction to your honest confidence in the directional call. "
+    "Do not introduce any fact, number, or date absent from the evidence or technical summary."
+    "\nRespond ONLY with valid JSON, no markdown fences."
 )
 
 _VALID_RECS = {r.value for r in Recommendation}
