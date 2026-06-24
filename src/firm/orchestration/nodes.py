@@ -738,7 +738,12 @@ MAX_DEBATE_ROUNDS = 1  # one full bull+bear exchange by default
 
 
 def make_bull_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
-    agent = DebaterAgent(llm=ports.llm, stance="bull")
+    agent = DebaterAgent(
+        llm=ports.llm,
+        stance="bull",
+        evidence=ports.evidence,
+        injection_guard=ports.injection_guard,
+    )
 
     def bull_node(state: GraphState) -> dict[str, Any]:
         symbol = state.get("symbol", "")
@@ -752,6 +757,7 @@ def make_bull_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
             evidence_summary=_evidence_text(state.get("evidence")),
             technical_summary=_technical_text(state.get("technical_signal")),
             opponent_history=list(state.get("bear_history") or []),
+            decision_ts=_parse_datetime(state.get("decision_ts", "")),
         )
         result = agent.run(inp)
         argument = (
@@ -766,7 +772,12 @@ def make_bull_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
 
 
 def make_bear_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
-    agent = DebaterAgent(llm=ports.llm, stance="bear")
+    agent = DebaterAgent(
+        llm=ports.llm,
+        stance="bear",
+        evidence=ports.evidence,
+        injection_guard=ports.injection_guard,
+    )
 
     def bear_node(state: GraphState) -> dict[str, Any]:
         symbol = state.get("symbol", "")
@@ -780,6 +791,7 @@ def make_bear_node(ports: NodePorts) -> Callable[[GraphState], dict[str, Any]]:
             evidence_summary=_evidence_text(state.get("evidence")),
             technical_summary=_technical_text(state.get("technical_signal")),
             opponent_history=list(state.get("bull_history") or []),
+            decision_ts=_parse_datetime(state.get("decision_ts", "")),
         )
         result = agent.run(inp)
         argument = (
