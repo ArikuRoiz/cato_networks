@@ -29,7 +29,7 @@ from firm.ports.types import NewsDoc
 # Fixtures / factories
 # ---------------------------------------------------------------------------
 
-_NOW = datetime(2026, 6, 23, 12, 0, 0, tzinfo=UTC)
+_NOW = datetime.now(UTC)
 _RECENT = (_NOW - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")  # 1 h ago (within 24h)
 _OLD = (_NOW - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")  # 48 h ago (outside default 24h)
 
